@@ -1,24 +1,58 @@
 """
-Match equivalent outcomes across different sources.
+Match equivalent markets across sources.
 
-TODO: Implement event name normalization and outcome grouping.
+Each market is keyed by the frozenset of canonical team abbreviations in its
+outcomes. Markets from different sources sharing the same key are the same game.
 """
 
+from dataclasses import dataclass, field
 from src.models import Market
+from src.matching.normalize import normalize_team
 
 
-def match_markets(markets: list[Market]) -> list[list[Market]]:
+@dataclass
+class MatchedMarket:
+    """A single real-world game, with the equivalent markets from each source."""
+    teams: frozenset            # canonical team abbreviations, e.g. {'BOS', 'SEA'}
+    markets: list[Market] = field(default_factory=list)
+
+    @property
+    def sources(self) -> set:
+        return {m.source for m in self.markets}
+
+    def __repr__(self):
+        return f"MatchedMarket({'/'.join(sorted(self.teams))}: {sorted(self.sources)})"
+
+
+def market_key(market: Market) -> frozenset | None:
+    """Canonical team-set for a market, or None if any team can't be normalized."""
+    abbrs = [normalize_team(o.name) for o in market.outcomes]
+    if any(a is None for a in abbrs):
+        return None
+    return frozenset(abbrs)
+
+
+def match_markets(markets: list[Market]) -> list[MatchedMarket]:
     """
-    Group markets that represent the same event across sources.
+    Group markets that represent the same game across sources.
 
-    Args:
-        markets: List of Market objects from various sources
-
-    Returns:
-        List of groups, where each group contains equivalent markets
-        (e.g., [kalshi_lakers_vs_celtics, odds_api_lakers_vs_celtics])
+    Returns only groups that appear in 2+ sources (i.e. arb candidates).
     """
-    # TODO: Implement
-    # For v1: Load manual mappings from config/mappings.yaml
-    # For v2: Implement fuzzy matching on event names
-    return []
+    groups: dict[frozenset, MatchedMarket] = {}
+    unmatched = []
+
+    for m in markets:
+        key = market_key(m)
+        if key is None:
+            unmatched.append(m)
+            continue
+        if key not in groups:
+            groups[key] = MatchedMarket(teams=key)
+        groups[key].markets.append(m)
+
+    if unmatched:
+        names = {o.name for m in unmatched for o in m.outcomes}
+        print(f"[matcher] {len(unmatched)} markets had unrecognized teams: {sorted(names)}")
+
+    # Only keep games present in more than one source
+    return [g for g in groups.values() if len(g.sources) >= 2]

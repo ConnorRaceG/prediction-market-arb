@@ -1,44 +1,37 @@
 """
-Fee models for each source.
+Fee models.
 
-Kalshi charges proportional trading fees, sportsbooks bake vig into the line.
+The two sources charge very differently, and getting this right is what
+separates real arbs from phantom ones:
+
+  - Kalshi: a trading fee is added ON TOP of the contract price. Per their
+    published general schedule, fee per $1 contract = 0.07 * P * (1-P),
+    where P is the price in dollars. (Rounds up to the next cent per order;
+    we use the continuous rate for sizing/EV.)
+
+  - DraftKings (via The Odds API): the vig is already BAKED INTO the line, so
+    the implied probability we read is already the true cost. No add-on.
+
+NOTE: Verify the current Kalshi rate for your specific market — sports markets
+can differ. It's a single constant below.
 """
 
-from config.settings import Settings
+KALSHI_FEE_RATE = 0.07  # general trading-fee coefficient; verify per market
 
 
-def get_kalshi_fee(price: float) -> float:
+def kalshi_fee_per_contract(price: float) -> float:
+    """Kalshi trading fee per $1 contract bought at `price` (in dollars)."""
+    return KALSHI_FEE_RATE * price * (1 - price)
+
+
+def effective_cost(source: str, implied_prob: float) -> float:
     """
-    Calculate Kalshi trading fee.
+    Cost to lock in $1 of payout on an outcome, including fees.
 
-    Kalshi charges ~0.5% maker/taker on both sides, proportional to price.
-    This is a simplified model; check Kalshi docs for exact formula.
-
-    Args:
-        price: The share price (0.01 to 0.99)
-
-    Returns:
-        Fee as a decimal (e.g., 0.005 = 0.5%)
+    This is THE number the arb detector compares: if the effective costs of
+    both sides of a game sum to < $1, there's a guaranteed profit.
     """
-    # TODO: Verify exact Kalshi fee structure
-    return 0.005
-
-
-def get_sportsbook_vig(prob_1: float, prob_2: float) -> float:
-    """
-    Calculate implied vig from overround.
-
-    If two outcomes have implied probs that sum to >100%,
-    the difference is the sportsbook's vig.
-
-    Args:
-        prob_1: Implied probability of outcome 1 (0-1)
-        prob_2: Implied probability of outcome 2 (0-1)
-
-    Returns:
-        Vig as a decimal (e.g., 0.04 = 4%)
-    """
-    overround = prob_1 + prob_2
-    if overround > 1:
-        return overround - 1
-    return 0
+    if source == "kalshi":
+        return implied_prob + kalshi_fee_per_contract(implied_prob)
+    # Sportsbook: vig is already in the price
+    return implied_prob

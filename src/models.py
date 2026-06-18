@@ -12,19 +12,37 @@ class OddsFormat(Enum):
 
 @dataclass
 class Outcome:
-    """A single outcome in a market (e.g., 'Lakers win')."""
-    name: str                  # Canonical name (normalized)
-    odds_american: float       # American odds (-110, +200, etc)
-    odds_decimal: Optional[float] = None
-    implied_prob: Optional[float] = None
+    """
+    A single outcome in a market (e.g., 'Lakers win').
+
+    Construct with ANY one of odds_american / odds_decimal / implied_prob;
+    the other two are derived automatically. Sportsbooks give American odds,
+    Kalshi gives implied probability (price in cents) — both work.
+    """
+    name: str                              # Canonical name (normalized)
+    odds_american: Optional[float] = None  # American odds (-110, +200)
+    odds_decimal: Optional[float] = None   # Decimal odds (1.91, 2.50)
+    implied_prob: Optional[float] = None   # Implied probability (0-1)
 
     def __post_init__(self):
-        """Compute missing odds formats from whichever we have."""
-        if self.odds_american is not None and self.odds_decimal is None:
-            self.odds_decimal = self._american_to_decimal(self.odds_american)
-        if self.odds_decimal is not None and self.implied_prob is None:
-            self.implied_prob = 1 / self.odds_decimal
+        """Derive all three odds formats from whichever one was provided."""
+        # First get decimal odds from whatever input we have
+        if self.odds_decimal is None:
+            if self.odds_american is not None:
+                self.odds_decimal = self._american_to_decimal(self.odds_american)
+            elif self.implied_prob is not None:
+                self.odds_decimal = 1 / self.implied_prob
+            else:
+                raise ValueError(
+                    f"Outcome '{self.name}' needs at least one of: "
+                    f"odds_american, odds_decimal, implied_prob"
+                )
 
+        # Then derive the remaining two from decimal
+        if self.implied_prob is None:
+            self.implied_prob = 1 / self.odds_decimal
+        if self.odds_american is None:
+            self.odds_american = self._decimal_to_american(self.odds_decimal)
 
     @staticmethod
     def _american_to_decimal(american: float) -> float:

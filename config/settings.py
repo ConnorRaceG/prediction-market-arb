@@ -14,7 +14,7 @@ class Settings:
     # Kalshi
     KALSHI_KEY_ID = os.getenv("KALSHI_KEY_ID")
     KALSHI_KEY_FILE = os.getenv("KALSHI_KEY_FILE", ".secrets/kalshi.pem")
-    KALSHI_BASE_URL = "https://api.kalshi.com/trade-api/v2"
+    KALSHI_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 
     # The Odds API
     ODDS_API_KEY = os.getenv("ODDS_API_KEY")
@@ -55,6 +55,6 @@ class Settings:
 if __name__ == "__main__":
     try:
         Settings.validate()
-        print("✓ All settings valid")
+        print("[OK] All settings valid")
     except (ValueError, FileNotFoundError) as e:
-        print(f"✗ Settings error: {e}")
+        print(f"[ERROR] Settings error: {e}")

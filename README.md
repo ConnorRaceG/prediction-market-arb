@@ -65,13 +65,23 @@ Should print `✓ All settings valid` if everything is configured correctly.
 
 ## Development Plan
 
-### Phase 1: Core pipeline (proof of concept)
+### Phase 1: Core pipeline (proof of concept) — DONE
 - [x] Project structure & config
-- [ ] Kalshi adapter (fetch NBA moneylines from Kalshi)
-- [ ] Odds API adapter (fetch NBA moneylines from DraftKings via The Odds API)
-- [ ] Manual event matcher (map "Lakers vs Celtics" across both sources)
-- [ ] Arb detection & sizing math
-- [ ] Streamlit dashboard with Refresh button
+- [x] Kalshi adapter (RSA-PSS auth; groups per-team markets into games)
+- [x] Odds API adapter (DraftKings moneylines)
+- [x] Event matcher (canonical team registry; matches by team-set)
+- [x] Arb detection & sizing math (Kalshi fees + DraftKings vig modeled)
+- [x] Streamlit dashboard with Refresh button
+
+**Note:** NBA is off-season, so live testing uses MLB (`baseball_mlb`). The
+pipeline is sport-agnostic — switch the dashboard selector to NBA when the
+season resumes (Kalshi series `KXNBA`).
+
+Run it:
+```bash
+streamlit run src/dashboard/app.py
+# or CLI:  python -m src.pipeline
+```
 
 ### Phase 2: Robustness
 - [ ] Fuzzy event name matching

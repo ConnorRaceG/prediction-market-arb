@@ -2,55 +2,60 @@
 Main pipeline: fetch → match → detect arbs.
 """
 
+import time
+from dataclasses import dataclass
+
 from src.adapters.kalshi import KalshiAdapter
 from src.adapters.odds_api import OddsApiAdapter
 from src.matching.matcher import match_markets
-from src.arb.detector import detect_arbs, ArbOpportunity
+from src.arb.detector import detect_arbs, ArbResult
 
 
-def run_arb_detection(sport: str = "basketball_nba") -> list[ArbOpportunity]:
-    """
-    Run the full pipeline: fetch data, match events, detect arbs.
+@dataclass
+class PipelineResult:
+    results: list[ArbResult]   # one per matched game, best edge first
+    n_kalshi: int
+    n_odds: int
+    n_matched: int
+    quota_remaining: str | None  # Odds API requests left this month
+    timestamp: float
 
-    Args:
-        sport: e.g. 'basketball_nba'
+    @property
+    def arbs(self) -> list[ArbResult]:
+        return [r for r in self.results if r.is_arb]
 
-    Returns:
-        List of detected arbitrage opportunities
-    """
-    # Fetch markets from both sources
-    kalshi_adapter = KalshiAdapter()
-    odds_adapter = OddsApiAdapter()
 
-    kalshi_markets = kalshi_adapter.fetch_markets(sport, "moneyline")
+def run_arb_detection(sport: str = "baseball_mlb", bankroll: float = 100.0) -> PipelineResult:
+    """Run the full pipeline: fetch both sources, match games, evaluate arbs."""
+    kalshi_markets = KalshiAdapter().fetch_markets(sport, "moneyline")
+
+    odds_adapter = OddsApiAdapter("draftkings")
     odds_markets = odds_adapter.fetch_markets(sport, "moneyline")
 
-    print(f"Fetched {len(kalshi_markets)} Kalshi markets")
-    print(f"Fetched {len(odds_markets)} sportsbook markets")
+    matched = match_markets(kalshi_markets + odds_markets)
+    results = detect_arbs(matched, bankroll=bankroll)
 
-    all_markets = kalshi_markets + odds_markets
-
-    # Match equivalent events across sources
-    matched_groups = match_markets(all_markets)
-    print(f"Matched into {len(matched_groups)} groups")
-
-    # Detect arbs in each group
-    arbs = detect_arbs(matched_groups)
-    print(f"Found {len(arbs)} opportunities")
-
-    return arbs
+    return PipelineResult(
+        results=results,
+        n_kalshi=len(kalshi_markets),
+        n_odds=len(odds_markets),
+        n_matched=len(matched),
+        quota_remaining=odds_adapter.requests_remaining,
+        timestamp=time.time(),
+    )
 
 
 if __name__ == "__main__":
-    # For testing: validate config and run pipeline
     from config.settings import Settings
 
-    try:
-        Settings.validate()
-        arbs = run_arb_detection()
-        for arb in arbs:
-            print(f"\n{arb.description}")
-            print(f"  Profit margin: {arb.profit_margin:.2%}")
-            print(f"  Stakes: {arb.stakes}")
-    except (ValueError, FileNotFoundError) as e:
-        print(f"Error: {e}")
+    Settings.validate()
+    pr = run_arb_detection()
+    print(f"Fetched {pr.n_kalshi} Kalshi + {pr.n_odds} DraftKings markets")
+    print(f"Matched {pr.n_matched} games; {len(pr.arbs)} profitable arb(s)")
+    print(f"Odds API quota remaining: {pr.quota_remaining}\n")
+    for r in pr.results:
+        print(r)
+        if r.is_arb:
+            print(f"      profit ${r.profit:.2f} on ${r.bankroll:.0f}; stakes:")
+            for leg in r.legs:
+                print(f"        ${leg.stake:6.2f} on {leg.team} @ {leg.source} ({leg.american:+.0f})")
