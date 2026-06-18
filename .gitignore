@@ -47,3 +47,6 @@ Thumbs.db
 
 # Streamlit
 .streamlit/
+
+# Scrape artifacts (transient captured JSON)
+scripts/dk_capture/
