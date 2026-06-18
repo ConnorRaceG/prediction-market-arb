@@ -20,6 +20,7 @@ class OddsApiAdapter(BaseAdapter):
         self.api_key = Settings.ODDS_API_KEY
         self.bookmaker = bookmaker  # which sportsbook to extract odds from
         self.requests_remaining = None  # updated after each call
+        self._session = requests.Session()
 
     def fetch_markets(self, sport: str, market_type: str = "moneyline") -> list[Market]:
         """
@@ -41,7 +42,7 @@ class OddsApiAdapter(BaseAdapter):
             "oddsFormat": "american",
         }
 
-        resp = requests.get(url, params=params, timeout=15)
+        resp = self._session.get(url, params=params, timeout=15)
         # Track remaining quota (The Odds API returns this header)
         self.requests_remaining = resp.headers.get("x-requests-remaining")
         resp.raise_for_status()

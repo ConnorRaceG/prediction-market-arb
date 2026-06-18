@@ -30,6 +30,7 @@ class KalshiAdapter(BaseAdapter):
         self.base_url = Settings.KALSHI_BASE_URL
         self.key_id = Settings.KALSHI_KEY_ID
         self._private_key = self._load_private_key()
+        self._session = requests.Session()  # reuse TCP/TLS across the many calls
 
     # ---- Auth ----
 
@@ -63,11 +64,20 @@ class KalshiAdapter(BaseAdapter):
         """Authenticated GET. `endpoint` like '/markets' (no prefix, no query)."""
         signed_path = self.PATH_PREFIX + endpoint  # signature excludes query string
         headers = self._auth_headers("GET", signed_path)
-        resp = requests.get(self.base_url + endpoint, headers=headers, params=params, timeout=15)
+        resp = self._session.get(self.base_url + endpoint, headers=headers, params=params, timeout=15)
         resp.raise_for_status()
         return resp.json()
 
     # ---- Market fetching ----
+
+    @staticmethod
+    def _outcome_from_leg(leg: dict) -> Outcome | None:
+        """Build an Outcome from a Kalshi market leg, or None if no executable ask price."""
+        yes_ask = float(leg.get("yes_ask_dollars", 0) or 0)
+        if not (0 < yes_ask < 1):
+            return None
+        name = leg.get("yes_sub_title") or leg.get("ticker", "").split("-")[-1]
+        return Outcome(name=name, implied_prob=yes_ask)
 
     def fetch_markets(self, sport: str, market_type: str = "moneyline") -> list[Market]:
         """
@@ -93,14 +103,7 @@ class KalshiAdapter(BaseAdapter):
 
         markets = []
         for event_ticker, legs in events.items():
-            outcomes = []
-            for leg in legs:
-                yes_ask = float(leg.get("yes_ask_dollars", 0) or 0)
-                if not (0 < yes_ask < 1):
-                    continue  # no executable ask price right now
-                team = leg.get("yes_sub_title") or leg["ticker"].split("-")[-1]
-                outcomes.append(Outcome(name=team, implied_prob=yes_ask))
-
+            outcomes = [o for leg in legs if (o := self._outcome_from_leg(leg))]
             if len(outcomes) < 2:
                 continue  # need both sides to be tradeable
 
@@ -143,13 +146,7 @@ class KalshiAdapter(BaseAdapter):
         markets = []
         for event_ticker, title in tickers:
             data = self._get("/markets", {"event_ticker": event_ticker, "status": "open", "limit": 100})
-            outcomes = []
-            for leg in data.get("markets", []):
-                yes_ask = float(leg.get("yes_ask_dollars", 0) or 0)
-                if not (0 < yes_ask < 1):
-                    continue
-                name = leg.get("yes_sub_title") or leg.get("ticker", "")
-                outcomes.append(Outcome(name=name, implied_prob=yes_ask))
+            outcomes = [o for leg in data.get("markets", []) if (o := self._outcome_from_leg(leg))]
             if outcomes:
                 markets.append(self._create_market(
                     market_id=event_ticker,

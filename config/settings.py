@@ -22,7 +22,9 @@ class Settings:
 
     # Anthropic — only needed for the LLM-assisted novelty matcher
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-    MATCHER_MODEL = os.getenv("MATCHER_MODEL", "claude-opus-4-8")
+    # Cheapest model by default (user's choice); override to claude-opus-4-8 for
+    # harder matches via MATCHER_MODEL in .env.
+    MATCHER_MODEL = os.getenv("MATCHER_MODEL", "claude-haiku-4-5")
 
     # Arb thresholds (percent)
     MIN_ARB_MARGIN = 1.0  # Only show arbs with >1% edge after fees

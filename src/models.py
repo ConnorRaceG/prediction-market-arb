@@ -1,13 +1,5 @@
 from dataclasses import dataclass
 from typing import Optional
-from enum import Enum
-
-
-class OddsFormat(Enum):
-    """Standard odds formats."""
-    AMERICAN = "american"      # -110, +150, etc
-    DECIMAL = "decimal"        # 1.91, 2.50, etc
-    IMPLIED_PROB = "implied"   # 0.523, etc (0-1 scale)
 
 
 @dataclass
