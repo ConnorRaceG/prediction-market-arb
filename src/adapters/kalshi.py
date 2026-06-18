@@ -117,6 +117,51 @@ class KalshiAdapter(BaseAdapter):
         return markets
 
 
+    def fetch_novelty_markets(self, categories=("Entertainment",), max_events: int = 25) -> list[Market]:
+        """
+        Fetch open non-sports markets (awards, entertainment, etc.) for novelty arb.
+
+        Each Kalshi event becomes one Market whose outcomes are its candidate
+        sub-markets (yes_sub_title) priced at yes_ask. Capped to keep both the
+        API calls and the LLM matcher input bounded.
+        """
+        tickers: list[tuple[str, str]] = []
+        cursor = None
+        for _ in range(8):
+            params = {"status": "open", "limit": 200}
+            if cursor:
+                params["cursor"] = cursor
+            data = self._get("/events", params)
+            for e in data.get("events", []):
+                if e.get("category") in categories:
+                    tickers.append((e["event_ticker"], e.get("title", e["event_ticker"])))
+            cursor = data.get("cursor")
+            if not cursor or len(tickers) >= max_events:
+                break
+        tickers = tickers[:max_events]
+
+        markets = []
+        for event_ticker, title in tickers:
+            data = self._get("/markets", {"event_ticker": event_ticker, "status": "open", "limit": 100})
+            outcomes = []
+            for leg in data.get("markets", []):
+                yes_ask = float(leg.get("yes_ask_dollars", 0) or 0)
+                if not (0 < yes_ask < 1):
+                    continue
+                name = leg.get("yes_sub_title") or leg.get("ticker", "")
+                outcomes.append(Outcome(name=name, implied_prob=yes_ask))
+            if outcomes:
+                markets.append(self._create_market(
+                    market_id=event_ticker,
+                    event_name=title,
+                    market_type="novelty",
+                    outcomes=outcomes,
+                    url="https://kalshi.com/markets",
+                    raw_data={"event_ticker": event_ticker},
+                ))
+        return markets
+
+
 if __name__ == "__main__":
     adapter = KalshiAdapter()
     status = adapter._get("/exchange/status")
