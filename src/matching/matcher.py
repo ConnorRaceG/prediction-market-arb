@@ -24,15 +24,15 @@ class MatchedMarket:
         return f"MatchedMarket({'/'.join(sorted(self.teams))}: {sorted(self.sources)})"
 
 
-def market_key(market: Market) -> frozenset | None:
+def market_key(market: Market, sport: str) -> frozenset | None:
     """Canonical team-set for a market, or None if any team can't be normalized."""
-    abbrs = [normalize_team(o.name) for o in market.outcomes]
+    abbrs = [normalize_team(o.name, sport) for o in market.outcomes]
     if any(a is None for a in abbrs):
         return None
     return frozenset(abbrs)
 
 
-def match_markets(markets: list[Market]) -> list[MatchedMarket]:
+def match_markets(markets: list[Market], sport: str) -> list[MatchedMarket]:
     """
     Group markets that represent the same game across sources.
 
@@ -42,7 +42,7 @@ def match_markets(markets: list[Market]) -> list[MatchedMarket]:
     unmatched = []
 
     for m in markets:
-        key = market_key(m)
+        key = market_key(m, sport)
         if key is None:
             unmatched.append(m)
             continue

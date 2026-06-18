@@ -8,11 +8,15 @@ from src.adapters.base import BaseAdapter
 from src.models import Market, Outcome
 from config.settings import Settings, project_root
 
-# Maps our canonical sport keys to Kalshi series tickers.
-# (Verified/refined against live data — see exploration below.)
+# Maps our canonical sport keys (same keys The Odds API uses) to Kalshi game
+# series tickers. Pattern is KX{LEAGUE}GAME. Verified live where in-season;
+# NBA/NHL confirmed by pattern (0 open games off-season as of June 2026).
 SPORT_SERIES = {
     "baseball_mlb": "KXMLBGAME",
-    "basketball_nba": "KXNBA",
+    "basketball_nba": "KXNBAGAME",
+    "basketball_wnba": "KXWNBAGAME",
+    "americanfootball_nfl": "KXNFLGAME",
+    "icehockey_nhl": "KXNHLGAME",
 }
 
 

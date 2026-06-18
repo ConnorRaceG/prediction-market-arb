@@ -32,8 +32,8 @@ def run_arb_detection(sport: str = "baseball_mlb", bankroll: float = 100.0) -> P
     odds_adapter = OddsApiAdapter("draftkings")
     odds_markets = odds_adapter.fetch_markets(sport, "moneyline")
 
-    matched = match_markets(kalshi_markets + odds_markets)
-    results = detect_arbs(matched, bankroll=bankroll)
+    matched = match_markets(kalshi_markets + odds_markets, sport)
+    results = detect_arbs(matched, sport, bankroll=bankroll)
 
     return PipelineResult(
         results=results,

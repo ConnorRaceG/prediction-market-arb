@@ -45,6 +45,7 @@ class ArbResult:
 
 def detect_arbs(
     matched: list[MatchedMarket],
+    sport: str,
     bankroll: float = 100.0,
     min_roi_pct: float | None = None,
 ) -> list[ArbResult]:
@@ -57,7 +58,7 @@ def detect_arbs(
         best: dict[str, ArbLeg] = {}
         for market in mm.markets:
             for outcome in market.outcomes:
-                team = normalize_team(outcome.name)
+                team = normalize_team(outcome.name, sport)
                 if team is None:
                     continue
                 cost = effective_cost(market.source, outcome.implied_prob)
