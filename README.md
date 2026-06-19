@@ -92,17 +92,5 @@ python -m tests.test_novelty_detector    # cross-venue Dutch-book sizing
 ## Scope
 
 - Detection, not execution. Sportsbooks have no betting API, so you place the bets yourself. The tool shows the edge and the exact stakes. Kalshi/Polymarket is detection-only too, since Polymarket isn't tradeable from every US state yet.
-- Top-of-book only. It uses the best available price and doesn't look at order-book depth. That's the main next step.
+- Top-of-book only. It uses the best available price and doesn't look at order-book depth.
 - Personal project, built and run for myself.
-
-## What's next
-
-- Order-book depth so the sizing is honest at scale
-- Alerting when an arb shows up, instead of manual refresh
-- Filtering Polymarket by topic to surface more Kalshi/Polymarket overlap
-
-## Glossary
-
-- Arb: riskless profit from the same outcome being priced differently on two venues
-- Vig: a sportsbook's built-in margin, the reason moneylines imply more than 100% total probability
-- Kalshi fee: scales with price and outcome probability, roughly 0.5% per side
