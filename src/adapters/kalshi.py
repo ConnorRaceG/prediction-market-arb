@@ -149,42 +149,72 @@ class KalshiAdapter(BaseAdapter):
         return markets
 
 
-    def fetch_novelty_markets(self, categories=("Entertainment",), max_events: int = 25) -> list[Market]:
+    def fetch_event_index(self, categories, max_pages: int = 25) -> list[tuple[str, str]]:
         """
-        Fetch open non-sports markets (awards, entertainment, etc.) for novelty arb.
+        Cheap listing of (event_ticker, title) for open events in the given
+        categories — no per-event market calls. Lets a caller decide which events
+        are worth pulling in full (e.g. only the ones a DK board might match).
 
-        Each Kalshi event becomes one Market whose outcomes are its candidate
-        sub-markets (yes_sub_title) priced at yes_ask. Capped to keep both the
-        API calls and the LLM matcher input bounded.
+        Pages through all open events; the default cap is high enough to reach the
+        long tail (Kalshi has a few thousand open events across all categories).
         """
-        tickers: list[tuple[str, str]] = []
+        out: list[tuple[str, str]] = []
         cursor = None
-        for _ in range(8):
+        for _ in range(max_pages):
             params = {"status": "open", "limit": 200}
             if cursor:
                 params["cursor"] = cursor
             data = self._get("/events", params)
             for e in data.get("events", []):
                 if e.get("category") in categories:
-                    tickers.append((e["event_ticker"], e.get("title", e["event_ticker"])))
+                    out.append((e["event_ticker"], e.get("title", e["event_ticker"])))
             cursor = data.get("cursor")
-            if not cursor or len(tickers) >= max_events:
+            if not cursor:
                 break
-        tickers = tickers[:max_events]
+        return out
 
+    def fetch_event_market(self, event_ticker: str, title: str = "") -> Market | None:
+        """
+        Pull one event's open markets as a single multi-outcome Market. Outcomes
+        come from each candidate's yes_ask; raw_data carries per-candidate yes/no
+        asks (the No side is needed for the futures cross-venue Yes/No arb).
+        """
+        data = self._get("/markets", {"event_ticker": event_ticker, "status": "open", "limit": 100})
+        legs = data.get("markets", [])
+        outcomes = [o for leg in legs if (o := self._outcome_from_leg(leg))]
+        if not outcomes:
+            return None
+        candidates = []
+        for leg in legs:
+            name = leg.get("yes_sub_title") or leg.get("ticker", "").split("-")[-1]
+            ya = float(leg.get("yes_ask_dollars") or 0)
+            na = float(leg.get("no_ask_dollars") or 0)
+            candidates.append({
+                "name": name,
+                "yes": ya if 0 < ya < 1 else None,
+                "no": na if 0 < na < 1 else None,
+            })
+        return self._create_market(
+            market_id=event_ticker,
+            event_name=title or event_ticker,
+            market_type="novelty",
+            outcomes=outcomes,
+            url="https://kalshi.com/markets",
+            raw_data={"event_ticker": event_ticker, "candidates": candidates},
+        )
+
+    def fetch_novelty_markets(self, categories=("Entertainment",), max_events: int = 25) -> list[Market]:
+        """
+        Fetch open non-sports markets (awards, entertainment, etc.) for novelty arb.
+        One Market per event (outcomes = candidate sub-markets priced at yes_ask),
+        capped to keep both the API calls and the LLM matcher input bounded.
+        """
+        index = self.fetch_event_index(categories)[:max_events]
         markets = []
-        for event_ticker, title in tickers:
-            data = self._get("/markets", {"event_ticker": event_ticker, "status": "open", "limit": 100})
-            outcomes = [o for leg in data.get("markets", []) if (o := self._outcome_from_leg(leg))]
-            if outcomes:
-                markets.append(self._create_market(
-                    market_id=event_ticker,
-                    event_name=title,
-                    market_type="novelty",
-                    outcomes=outcomes,
-                    url="https://kalshi.com/markets",
-                    raw_data={"event_ticker": event_ticker},
-                ))
+        for event_ticker, title in index:
+            m = self.fetch_event_market(event_ticker, title)
+            if m is not None:
+                markets.append(m)
         return markets
 
 

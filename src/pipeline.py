@@ -11,9 +11,10 @@ from src.adapters.odds_api import OddsApiAdapter
 from src.matching.matcher import match_markets
 from src.arb.detector import detect_arbs, ArbResult
 
-if TYPE_CHECKING:  # novelty/polymarket paths pull Playwright/Anthropic; keep lazy
+if TYPE_CHECKING:  # novelty/polymarket/futures paths pull Playwright/Anthropic; keep lazy
     from src.arb.novelty_detector import NoveltyArbResult
     from src.arb.polymarket_detector import PolymarketArbResult
+    from src.arb.futures_detector import FuturesComparison
 
 
 @dataclass
@@ -134,6 +135,79 @@ def run_polymarket_detection(
     return PolymarketPipelineResult(
         results=results,
         n_poly=len(poly_markets),
+        n_kalshi=len(kalshi_markets),
+        n_matched=len(matches),
+        timestamp=time.time(),
+    )
+
+
+_TITLE_STOP = {"the", "of", "for", "a", "an", "to", "in", "on", "and", "will", "be",
+               "who", "what", "2025", "2026", "2027", "2028"}
+
+
+def _title_tokens(s: str) -> set[str]:
+    """Significant words in a board title, for cheap title-to-title pre-matching."""
+    from src.matching.futures_matcher import normalize_name
+    return {t for t in normalize_name(s).split() if t not in _TITLE_STOP and len(t) > 1}
+
+
+@dataclass
+class DKPredictionsPipelineResult:
+    comparisons: list["FuturesComparison"]  # one per matched board, cheapest lock first
+    n_dk: int
+    n_kalshi: int
+    n_matched: int
+    timestamp: float
+
+    @property
+    def arbs(self) -> list["FuturesComparison"]:
+        return [c for c in self.comparisons if c.n_arbs > 0]
+
+
+def run_dk_predictions_detection(
+    categories=("culture", "politics", "economics", "business"),
+    max_groups_per_cat: int = 15,
+    headless: bool = False,
+    kalshi_categories=("Entertainment", "Politics", "Economics", "Financials"),
+    max_kalshi_fetch: int = 40,
+) -> DKPredictionsPipelineResult:
+    """
+    DK Predictions <-> Kalshi futures scan (detection only).
+
+    Scrape DK Predictions boards (prices read from DK's own API, not the screen),
+    then pull only the Kalshi events whose titles share words with a DK board, match
+    boards by shared candidate names (deterministic, no LLM), and compare prices to
+    flag cross-venue Yes/No arbs. Imports are deferred so the sports path stays light;
+    the DK scrape needs a browser, Kalshi needs its usual creds, no Anthropic key.
+    """
+    from src.adapters.dk_predictions import DKPredictionsAdapter
+    from src.matching.futures_matcher import match_futures
+    from src.arb.futures_detector import compare_futures
+
+    dk_markets = DKPredictionsAdapter(headless=headless).fetch_markets(
+        categories=categories, max_groups_per_cat=max_groups_per_cat)
+
+    kalshi = KalshiAdapter()
+    index = kalshi.fetch_event_index(kalshi_categories)
+    dk_tokens = [_title_tokens(d.event_name) for d in dk_markets]
+    chosen = [(tk, title) for tk, title in index
+              if any(len(_title_tokens(title) & dt) >= 2 for dt in dk_tokens)]
+    kalshi_markets = []
+    for tk, title in chosen[:max_kalshi_fetch]:
+        m = kalshi.fetch_event_market(tk, title)
+        if m is not None:
+            kalshi_markets.append(m)
+
+    matches = match_futures(dk_markets, kalshi_markets)
+    dk_by = {m.market_id: m for m in dk_markets}
+    k_by = {m.market_id: m for m in kalshi_markets}
+    comparisons = [compare_futures(mt, dk_by[mt.dk_market_id], k_by[mt.kalshi_market_id])
+                   for mt in matches]
+    comparisons.sort(key=lambda c: c.best_lock if c.best_lock is not None else 9)
+
+    return DKPredictionsPipelineResult(
+        comparisons=comparisons,
+        n_dk=len(dk_markets),
         n_kalshi=len(kalshi_markets),
         n_matched=len(matches),
         timestamp=time.time(),
