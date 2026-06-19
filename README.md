@@ -1,6 +1,6 @@
 # prediction-market-arb
 
-Finds risk-free arbitrage between Kalshi and US sportsbooks, and between Kalshi and Polymarket. It prices the same real-world outcome on two venues, includes the fees, and flags any time the two sides add up to less than $1.
+Finds risk-free arbitrage between US sportsbooks, Kalshi, and Polymarket. It prices the same real-world outcome on two venues, includes the fees, and flags any time the two sides add up to less than $1.
 
 I started this after noticing about a 20% gap on the Nathan's Hot Dog Eating Contest between Kalshi and DraftKings. Figured if it shows up once it shows up elsewhere, so I built something to find it automatically.
 
