@@ -4,7 +4,7 @@ Finds risk-free arbitrage between US sportsbooks, Kalshi, and Polymarket. It pri
 
 I started this after noticing about a 20% gap on the Nathan's Hot Dog Eating Contest between Kalshi and DraftKings. Figured if it shows up once it shows up elsewhere, so I built something to find it automatically.
 
-There's a Streamlit dashboard that shows each opportunity, the exact stakes to place, and how close every other game is to becoming an arb. You refresh it manually.
+There's a Streamlit dashboard that shows each opportunity, the exact stakes to place, and how close every other market is to becoming an arb. All three tracks land in one grid sorted by edge. The sports scan is always on; the novelty and Polymarket tracks are sidebar toggles, off by default since they call Claude and run only when you refresh.
 
 ## What it does
 
@@ -26,7 +26,7 @@ Three separate tracks. They share the same fee and sizing math but match games d
 | Novelty | DraftKings novelty x Kalshi | semantic, via Claude (no team key exists) | working |
 | Polymarket | Polymarket x Kalshi | semantic, via Claude (prediction vs prediction) | working |
 
-The deterministic path never loads the LLM or browser dependencies. Those are imported lazily, only when you run a novelty or Polymarket scan.
+The deterministic path never loads the LLM or browser dependencies. Those are imported lazily, only when you enable a novelty or Polymarket scan. The tracks stay separate all the way through detection and only come together as cards in the dashboard (`src/dashboard/cards.py`).
 
 ```
 src/
@@ -48,7 +48,9 @@ src/
 │   ├── novelty_detector.py    #   DraftKings x Kalshi cross-venue arb
 │   └── polymarket_detector.py #   Polymarket x Kalshi cross-venue arb
 ├── pipeline.py                # orchestration: fetch -> match -> detect
-└── dashboard/app.py           # Streamlit UI
+└── dashboard/
+    ├── app.py                 #   Streamlit UI (one edge-sorted grid, all tracks)
+    └── cards.py               #   view-model: maps each track's result to a card
 tests/                         # deterministic + novelty detector unit tests
 ```
 

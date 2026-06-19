@@ -2,12 +2,22 @@
 Streamlit dashboard for arb detection.
 
 Run with:  streamlit run src/dashboard/app.py
+
+Shows three detection tracks in one edge-sorted grid: the deterministic sports
+track (Kalshi vs US sportsbooks) always on, plus optional LLM-matched novelty
+(DraftKings) and Polymarket tracks. Each track keeps its own pipeline; they're
+unified only as cards here (see src/dashboard/cards.py).
 """
 
 import time
 import streamlit as st
 
-from src.pipeline import run_arb_detection
+from src.pipeline import (
+    run_arb_detection,
+    run_novelty_detection,
+    run_polymarket_detection,
+)
+from src.dashboard.cards import from_sports, from_novelty, from_polymarket
 from config.settings import Settings
 
 # Display label -> canonical sport key (same keys The Odds API uses)
@@ -19,15 +29,6 @@ SPORTS = {
     "NHL": "icehockey_nhl",
 }
 DEFAULT_SPORTS = ["MLB", "WNBA", "NFL"]  # in-season as of June 2026
-
-SOURCE_LABEL = {
-    "kalshi": "Kalshi", "odds_api": "Sportsbook",
-    "draftkings": "DraftKings", "fanduel": "FanDuel", "betmgm": "BetMGM",
-    "betrivers": "BetRivers", "williamhill_us": "Caesars", "caesars": "Caesars",
-    "espnbet": "ESPN BET", "fanatics": "Fanatics", "ballybet": "Bally",
-    "hardrockbet": "Hard Rock",
-}
-SOURCE_CLASS = {"kalshi": "kalshi"}  # everything else renders as a 'book' chip
 
 # Edge meter range (fraction). 0% = break-even line; >0 = arbitrage.
 EDGE_MIN, EDGE_MAX = -0.06, 0.03
@@ -41,6 +42,10 @@ CSS = """
 .card-head { display:flex; justify-content:space-between; align-items:center; }
 .matchup { font-weight:700; font-size:1.05rem; }
 .sport-tag { font-size:0.68rem; opacity:0.55; text-transform:uppercase; letter-spacing:0.05em; margin-left:7px; }
+.sub { font-size:0.82rem; opacity:0.75; margin:3px 0 0; }
+.intel { display:inline-block; font-size:0.62rem; font-weight:700; letter-spacing:0.04em;
+         text-transform:uppercase; color:#f59e0b; border:1px solid rgba(245,158,11,0.45);
+         border-radius:5px; padding:0 5px; margin-top:6px; }
 .edge-pill { font-weight:700; font-size:0.92rem; padding:2px 10px; border-radius:999px; color:#fff; }
 .edge-pill.arb { background:#16a34a; } .edge-pill.close { background:#f59e0b; } .edge-pill.none { background:#64748b; }
 .meter { position:relative; height:8px; border-radius:999px; background:rgba(128,128,128,0.18); margin:11px 0 13px; }
@@ -77,10 +82,10 @@ table.board td.best { color:#16a34a; font-weight:700; }
 """
 
 
-def _status(r):
-    if r.is_arb:
+def _status(view):
+    if view.is_arb:
         return "arb"
-    return "close" if r.edge > -0.015 else "none"
+    return "close" if view.edge > -0.015 else "none"
 
 
 def _meter(edge):
@@ -116,105 +121,139 @@ def _relative(ts):
     return f"in {h}h {m:02d}m" if h else f"in {m}m"
 
 
-def _am_decimal(american):
-    """Decimal payout for American odds — higher is the better line."""
-    return 1 + (american / 100 if american > 0 else 100 / abs(american))
-
-
-def _board(r):
+def _board(rows):
     """Two-column table per team: Kalshi vs the best book (named), winner green."""
-    by_team = {}  # team -> {'kalshi': american, 'book': (american, book_key)}
-    for q in (r.quotes or []):
-        slot = by_team.setdefault(q.team, {})
-        if q.source == "kalshi":
-            slot["kalshi"] = q.american
-        else:  # keep the best book line for the team
-            cur = slot.get("book")
-            if cur is None or _am_decimal(q.american) > _am_decimal(cur[0]):
-                slot["book"] = (q.american, q.source)
-    best_src = {leg.team: leg.source for leg in r.legs}
-    rows = ""
-    for team, s in by_team.items():
-        k = s.get("kalshi")
-        k_cls = " class='best'" if best_src.get(team) == "kalshi" else ""
-        k_cell = f"<td{k_cls}>{k:+.0f}</td>" if k is not None else "<td>—</td>"
-        b = s.get("book")
-        if b:
-            b_am, b_key = b
-            b_cls = " class='best'" if best_src.get(team) == b_key else ""
-            b_cell = (f"<td{b_cls}>{b_am:+.0f} "
-                      f"<small>{SOURCE_LABEL.get(b_key, b_key)}</small></td>")
+    body = ""
+    for row in rows:
+        k_cls = " class='best'" if row.kalshi_best else ""
+        k_cell = (f"<td{k_cls}>{row.kalshi_american:+.0f}</td>"
+                  if row.kalshi_american is not None else "<td>—</td>")
+        if row.book_american is not None:
+            b_cls = " class='best'" if row.book_best else ""
+            b_cell = (f"<td{b_cls}>{row.book_american:+.0f} "
+                      f"<small>{row.book_label}</small></td>")
         else:
             b_cell = "<td>—</td>"
-        rows += f"<tr><td>{team}</td>{k_cell}{b_cell}</tr>"
+        body += f"<tr><td>{row.team}</td>{k_cell}{b_cell}</tr>"
     return (f"<table class='board'><tr><th></th><th>Kalshi</th>"
-            f"<th>Best book</th></tr>{rows}</table>")
+            f"<th>Best book</th></tr>{body}</table>")
 
 
-def render_card(sport_label, r):
-    status = _status(r)
-    left, width = _meter(r.edge)
+def _details(view):
+    """Expandable footer: a price board for sports, the LLM rationale otherwise."""
+    if view.board is not None:
+        body = (
+            f"<div class='det-row'><b>Matchup</b>{view.title}</div>"
+            f"<div class='det-row'><b>Starts</b>{_fmt_time(view.start_time)} "
+            f"({_relative(view.start_time)})</div>"
+            f"{_board(view.board)}"
+        )
+        summary = "Game details &amp; all prices"
+    else:
+        conf = f"{view.confidence:.0%}" if view.confidence is not None else "—"
+        body = (
+            f"<div class='det-row'><b>Match confidence</b>{conf}</div>"
+            f"<div class='det-row'><b>Why matched</b>{view.note or '—'}</div>"
+        )
+        summary = "Match details"
+    return (f"<details class='more'><summary>{summary}</summary>"
+            f"<div class='det'>{body}</div></details>")
+
+
+def render_card(view):
+    status = _status(view)
+    left, width = _meter(view.edge)
     legs_html = ""
-    for leg in r.legs:
-        src_cls = SOURCE_CLASS.get(leg.source, "book")
-        src_lbl = SOURCE_LABEL.get(leg.source, leg.source)
+    for leg in view.legs:
         price = f"{leg.implied_prob * 100:.0f}¢" if leg.contracts else f"{leg.implied_prob:.0%}"
-        if not r.is_arb:
+        if not view.is_arb:
             action = ""
         elif leg.contracts:  # Kalshi: whole-contract quantity is what you enter
             action = f"<span class='stake'>×{leg.contracts} <small>(${leg.stake:.0f})</small></span>"
-        else:               # Sportsbook: dollar stake (cents are fine here)
+        else:               # other venue: dollar stake (cents are fine here)
             action = f"<span class='stake'>${leg.stake:.2f}</span>"
         legs_html += (
-            f"<div class='leg'><span class='team'>{leg.team}</span>"
-            f"<span class='src {src_cls}'>{src_lbl}</span>"
+            f"<div class='leg'><span class='team'>{leg.label}</span>"
+            f"<span class='src {leg.venue_class}'>{leg.venue_label}</span>"
             f"<span class='odds'>{leg.american:+.0f} · {price}</span>{action}</div>"
         )
     ribbon = (
-        f"<div class='ribbon'>✅ Lock ${r.profit:.2f} on ${r.staked:.0f} staked "
-        f"({r.roi:+.1%})</div>" if r.is_arb else ""
+        f"<div class='ribbon'>✅ Lock ${view.profit:.2f} on ${view.staked:.0f} staked "
+        f"({view.roi:+.1%})</div>" if view.is_arb else ""
     )
-    when = f"<div class='when'>🗓 {_fmt_time(r.start_time)} · {_relative(r.start_time)}</div>"
-    details = (
-        "<details class='more'><summary>Game details &amp; all prices</summary>"
-        "<div class='det'>"
-        f"<div class='det-row'><b>Matchup</b>{r.matchup_full or r.game}</div>"
-        f"<div class='det-row'><b>Starts</b>{_fmt_time(r.start_time)} ({_relative(r.start_time)})</div>"
-        f"{_board(r)}</div></details>"
-    )
+    subtitle = f"<div class='sub'>{view.subtitle}</div>" if view.subtitle else ""
+    flag = "<div><span class='intel'>detection only</span></div>" if view.detection_only else ""
+    when = (f"<div class='when'>🗓 {_fmt_time(view.start_time)} · {_relative(view.start_time)}</div>"
+            if view.start_time else "")
     return (
         f"<div class='arb-card {status}'>"
-        f"<div class='card-head'><span class='matchup'>{r.game}"
-        f"<span class='sport-tag'>{sport_label}</span></span>"
-        f"<span class='edge-pill {status}'>{r.edge:+.2%}</span></div>"
-        f"{when}"
+        f"<div class='card-head'><span class='matchup'>{view.title}"
+        f"<span class='sport-tag'>{view.tag}</span></span>"
+        f"<span class='edge-pill {status}'>{view.edge:+.2%}</span></div>"
+        f"{subtitle}{flag}{when}"
         f"<div class='meter'><div class='meter-zero'></div>"
         f"<div class='meter-fill {status}' style='left:{left:.1f}%; width:{width:.1f}%'></div></div>"
-        f"<div class='legs'>{legs_html}</div>{ribbon}{details}</div>"
+        f"<div class='legs'>{legs_html}</div>{ribbon}{_details(view)}</div>"
     )
 
 
-def scan(sport_labels, bankroll):
-    items, n_games, n_arbs, quota = [], 0, 0, None
-    progress = st.progress(0.0, text="Fetching live odds...")
-    for i, label in enumerate(sport_labels):
+def scan(sport_labels, bankroll, include_novelty, include_poly):
+    """Run every enabled track and return their cards in one edge-sorted list.
+
+    The sports track is cheap (HTTP only). The novelty and Polymarket tracks
+    scrape/call Claude, so they run only when ticked, and a failure in either
+    degrades to a warning instead of taking down the page.
+    """
+    cards, n_matched, n_arbs, quota, warnings = [], 0, 0, None, []
+    steps = len(sport_labels) + int(include_novelty) + int(include_poly)
+    progress = st.progress(0.0, text="Scanning markets...")
+    done = 0
+
+    for label in sport_labels:
         pr = run_arb_detection(SPORTS[label], bankroll)
-        items.extend((label, r) for r in pr.results)
-        n_games += pr.n_matched
+        cards.extend(from_sports(label, r) for r in pr.results)
+        n_matched += pr.n_matched
         n_arbs += len(pr.arbs)
         quota = pr.quota_remaining or quota
-        progress.progress((i + 1) / len(sport_labels), text=f"Scanned {label}")
+        done += 1
+        progress.progress(done / steps, text=f"Scanned {label}")
+
+    if include_novelty:
+        progress.progress(done / steps, text="Scanning novelty (DraftKings × Kalshi)...")
+        try:
+            nr = run_novelty_detection(bankroll=bankroll, headless=True)
+            cards.extend(from_novelty(r) for r in nr.results)
+            n_matched += nr.n_matched
+            n_arbs += len(nr.arbs)
+        except Exception as e:  # scrape blocked, no API key, etc. — keep the page alive
+            warnings.append(f"Novelty scan failed: {e}")
+        done += 1
+        progress.progress(done / steps)
+
+    if include_poly:
+        progress.progress(done / steps, text="Scanning Polymarket × Kalshi...")
+        try:
+            pmr = run_polymarket_detection(bankroll=bankroll)
+            cards.extend(from_polymarket(r) for r in pmr.results)
+            n_matched += pmr.n_matched
+            n_arbs += len(pmr.arbs)
+        except Exception as e:
+            warnings.append(f"Polymarket scan failed: {e}")
+        done += 1
+        progress.progress(done / steps)
+
     progress.empty()
-    items.sort(key=lambda x: x[1].edge, reverse=True)
-    return {"items": items, "n_games": n_games, "n_arbs": n_arbs,
-            "quota": quota, "ts": time.time()}
+    cards.sort(key=lambda c: c.edge, reverse=True)
+    return {"cards": cards, "n_matched": n_matched, "n_arbs": n_arbs,
+            "quota": quota, "warnings": warnings, "ts": time.time()}
 
 
 def main():
     st.set_page_config(page_title="Betting Market Arb Detector", layout="wide")
     st.markdown(CSS, unsafe_allow_html=True)
     st.title("🎯 Betting Market Arb Detector")
-    st.caption("Kalshi vs major US sportsbooks · live moneyline arbitrage · fees & vig included")
+    st.caption("Kalshi vs US sportsbooks, plus LLM-matched novelty & Polymarket · "
+               "live cross-venue arbitrage · fees & vig included")
 
     try:
         Settings.validate()
@@ -225,41 +264,56 @@ def main():
     st.sidebar.header("Controls")
     sport_labels = st.sidebar.multiselect("Sports", list(SPORTS.keys()), default=DEFAULT_SPORTS)
     bankroll = st.sidebar.number_input("Bankroll ($)", min_value=10.0, value=100.0, step=10.0)
+
+    st.sidebar.markdown("**Extra tracks** · LLM-matched, slower")
+    have_key = bool(Settings.ANTHROPIC_API_KEY)
+    include_novelty = st.sidebar.checkbox(
+        "Novelty (DraftKings × Kalshi)", value=False, disabled=not have_key)
+    include_poly = st.sidebar.checkbox(
+        "Polymarket × Kalshi", value=False, disabled=not have_key)
+    if not have_key:
+        st.sidebar.caption("Set ANTHROPIC_API_KEY in .env to enable the LLM-matched tracks.")
+    else:
+        st.sidebar.caption("These scrape / call Claude, so they run only on refresh.")
+
     refresh = st.sidebar.button("🔄 Refresh", type="primary", use_container_width=True)
     st.sidebar.caption("Each sport = 1 Odds API request per refresh.")
 
-    if not sport_labels:
-        st.info("Pick at least one sport in the sidebar.")
+    if not sport_labels and not include_novelty and not include_poly:
+        st.info("Pick at least one sport or enable a track in the sidebar.")
         return
 
-    # Fetch on first load or when Refresh pressed (avoids burning API quota)
+    # Fetch on first load or when Refresh pressed (avoids burning API quota and
+    # re-running the slow LLM tracks on every widget interaction).
     if refresh or "scan" not in st.session_state:
-        st.session_state.scan = scan(sport_labels, bankroll)
+        st.session_state.scan = scan(sport_labels, bankroll, include_novelty, include_poly)
     data = st.session_state.scan
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Games matched", data["n_games"])
+    c1.metric("Markets matched", data["n_matched"])
     c2.metric("Arbs found", data["n_arbs"])
     c3.metric("Odds API quota", data["quota"] or "—")
     c4.metric("Last refresh", time.strftime("%H:%M:%S", time.localtime(data["ts"])))
 
+    for w in data.get("warnings", []):
+        st.warning(f"⚠️ {w}")
+
     if data["n_arbs"]:
         st.success(f"💰 {data['n_arbs']} live arbitrage opportunity(ies) — green cards below, with stakes.")
-    elif data["items"]:
+    elif data["cards"]:
         st.info("No profitable arbs right now. Cards are sorted by edge — watch the ones nearing the center line.")
 
-    if not data["items"]:
-        st.warning("No matched games for the selected sports (season off or none scheduled).")
+    if not data["cards"]:
+        st.warning("No matched markets for the current selection (season off, none scheduled, or no overlap).")
         return
 
-    cards = "".join(render_card(label, r) for label, r in data["items"])
+    cards = "".join(render_card(c) for c in data["cards"])
     st.markdown(f"<div class='arb-wrap'>{cards}</div>", unsafe_allow_html=True)
     st.caption(
         "Edge = 1 − (sum of effective costs incl. Kalshi fees + sportsbook vig). "
-        "Each book leg shows the **best line across major US books** (named on the card). "
-        "Green meter crossing the center line = profitable arb. "
-        "**×N = buy N whole Kalshi contracts** at the ¢ limit price (that's the "
-        "number you enter in the app); sportsbook legs show a $ stake. "
+        "Sports cards show the best line across major US books; NOVELTY and POLYMARKET "
+        "cards are matched by Claude (open the card to see the match confidence and why). "
+        "×N = buy N whole Kalshi contracts at the ¢ limit price; other legs show a $ stake. "
         "All legs are placed manually — no betting API."
     )
 
