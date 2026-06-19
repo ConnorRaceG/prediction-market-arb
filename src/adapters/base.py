@@ -32,6 +32,8 @@ class BaseAdapter(ABC):
         outcomes: list,
         url: Optional[str] = None,
         raw_data: Optional[dict] = None,
+        start_time: Optional[float] = None,
+        slate_date: Optional[str] = None,
     ) -> Market:
         """Helper to create a normalized Market object."""
         return Market(
@@ -43,4 +45,6 @@ class BaseAdapter(ABC):
             timestamp=time.time(),
             url=url,
             raw_data=raw_data,
+            start_time=start_time,
+            slate_date=slate_date,
         )

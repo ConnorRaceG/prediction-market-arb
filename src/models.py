@@ -15,6 +15,7 @@ class Outcome:
     odds_american: Optional[float] = None  # American odds (-110, +200)
     odds_decimal: Optional[float] = None   # Decimal odds (1.91, 2.50)
     implied_prob: Optional[float] = None   # Implied probability (0-1)
+    book: Optional[str] = None             # Specific sportsbook this price is from
 
     def __post_init__(self):
         """Derive all three odds formats from whichever one was provided."""
@@ -64,6 +65,8 @@ class Market:
     timestamp: float           # When we fetched this (unix timestamp)
     url: Optional[str] = None  # Link to market on source website
     raw_data: Optional[dict] = None  # Raw JSON for debugging
+    start_time: Optional[float] = None  # Game start (unix UTC), for display
+    slate_date: Optional[str] = None    # ET game date 'YYYY-MM-DD', for matching
 
     def __repr__(self):
         outcome_str = ", ".join([f"{o.name} @ {o.odds_american:+.0f}" for o in self.outcomes])

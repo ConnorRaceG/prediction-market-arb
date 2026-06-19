@@ -1,4 +1,5 @@
 import base64
+import re
 import time
 import requests
 from cryptography.hazmat.primitives import hashes, serialization
@@ -6,7 +7,16 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 from src.adapters.base import BaseAdapter
 from src.models import Market, Outcome
+from src.timeutil import et_date, et_unix
 from config.settings import Settings, project_root
+
+_MONTHS = {m: i for i, m in enumerate(
+    ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+     "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], start=1)}
+
+# Game tickers look like KXMLBGAME-26JUN211435SDTEX (YY MON DD HHMM teams) or,
+# for some sports, KXWNBAGAME-26JUN20SEAPHX (no time) — so HHMM is optional.
+_TICKER_TIME = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})(\d{4})?")
 
 # Maps our canonical sport keys (same keys The Odds API uses) to Kalshi game
 # series tickers. Pattern is KX{LEAGUE}GAME. Verified live where in-season;
@@ -79,6 +89,22 @@ class KalshiAdapter(BaseAdapter):
         name = leg.get("yes_sub_title") or leg.get("ticker", "").split("-")[-1]
         return Outcome(name=name, implied_prob=yes_ask)
 
+    @staticmethod
+    def _ticker_time(event_ticker: str) -> tuple[float | None, str | None]:
+        """(start_unix, ET game-date) parsed from a game ticker's embedded date/time."""
+        m = _TICKER_TIME.search(event_ticker or "")
+        if not m:
+            return None, None
+        yy, mon, dd, hhmm = m.groups()
+        month = _MONTHS.get(mon)
+        if not month:
+            return None, None
+        hour, minute = (int(hhmm[:2]), int(hhmm[2:])) if hhmm else (12, 0)
+        start = et_unix(2000 + int(yy), month, int(dd), hour, minute)
+        # When the ticker carries no time (e.g. WNBA), start_time is just a noon
+        # placeholder; the date is exact and the sportsbook supplies the real time.
+        return (start if hhmm else None), et_date(start)
+
     def fetch_markets(self, sport: str, market_type: str = "moneyline") -> list[Market]:
         """
         Fetch open Kalshi game markets for a sport.
@@ -107,6 +133,7 @@ class KalshiAdapter(BaseAdapter):
             if len(outcomes) < 2:
                 continue  # need both sides to be tradeable
 
+            start_time, slate_date = self._ticker_time(event_ticker)
             markets.append(
                 self._create_market(
                     market_id=event_ticker,
@@ -115,6 +142,8 @@ class KalshiAdapter(BaseAdapter):
                     outcomes=outcomes,
                     url="https://kalshi.com/markets",
                     raw_data={"event_ticker": event_ticker, "legs": legs},
+                    start_time=start_time,
+                    slate_date=slate_date,
                 )
             )
         return markets

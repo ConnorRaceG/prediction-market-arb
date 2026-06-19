@@ -8,7 +8,7 @@ Claude to read both venues' markets and return economically-equivalent matches
 with aligned outcomes.
 
 Uses the official Anthropic SDK with structured JSON output. Model is
-configurable (Settings.MATCHER_MODEL, default claude-opus-4-8).
+configurable (Settings.MATCHER_MODEL, default claude-haiku-4-5).
 """
 
 import json
@@ -118,6 +118,103 @@ def match_novelty(dk_markets: list[Market], kalshi_markets: list[Market]) -> lis
             confidence=m["confidence"],
             note=m["note"],
             outcome_map={p["dk_outcome"]: p["kalshi_outcome"] for p in m["outcome_map"]},
+        )
+        for m in data["matches"]
+    ]
+
+
+# --- Polymarket <-> Kalshi (its own track; novelty path above is untouched) ---
+
+_POLY_SYSTEM = (
+    "You match betting markets across two prediction-market venues: Polymarket and "
+    "Kalshi. Two markets MATCH only if they resolve on the exact same real-world "
+    "question, so that a position on one venue can be hedged by the opposite "
+    "position on the other. For each match, align every Polymarket outcome to its "
+    "economically-equivalent Kalshi outcome (e.g. Polymarket 'Yes' on 'Will "
+    "Argentina win the World Cup?' aligns with a Kalshi 'Argentina'/'Yes' outcome "
+    "on the same question). Only return matches you are confident share the exact "
+    "same resolution. Returning no matches is correct when nothing lines up. Be "
+    "conservative — a wrong match loses real money."
+)
+
+_POLY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "matches": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "poly_market_id": {"type": "string"},
+                    "kalshi_market_id": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "note": {"type": "string"},
+                    "outcome_map": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "poly_outcome": {"type": "string"},
+                                "kalshi_outcome": {"type": "string"},
+                            },
+                            "required": ["poly_outcome", "kalshi_outcome"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["poly_market_id", "kalshi_market_id", "confidence", "note", "outcome_map"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["matches"],
+    "additionalProperties": False,
+}
+
+
+@dataclass
+class PolymarketMatch:
+    poly_id: str
+    kalshi_id: str
+    confidence: float
+    note: str
+    outcome_map: dict[str, str]  # polymarket outcome name -> kalshi outcome name
+
+
+def match_polymarket_kalshi(poly_markets: list[Market],
+                            kalshi_markets: list[Market]) -> list[PolymarketMatch]:
+    """Ask Claude to align Polymarket markets with Kalshi ones (both prediction markets)."""
+    if not Settings.ANTHROPIC_API_KEY:
+        raise ValueError(
+            "ANTHROPIC_API_KEY not set — add it to .env to use the LLM matcher."
+        )
+    if not poly_markets or not kalshi_markets:
+        return []
+
+    user = (
+        "Polymarket markets:\n" + _describe(poly_markets, "P")
+        + "\n\nKalshi markets:\n" + _describe(kalshi_markets, "K")
+        + "\n\nReturn the matches."
+    )
+
+    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+    resp = client.messages.create(
+        model=Settings.MATCHER_MODEL,
+        max_tokens=4000,
+        system=_POLY_SYSTEM,
+        messages=[{"role": "user", "content": user}],
+        output_config={"format": {"type": "json_schema", "schema": _POLY_SCHEMA}},
+    )
+
+    text = next(b.text for b in resp.content if b.type == "text")
+    data = json.loads(text)
+    return [
+        PolymarketMatch(
+            poly_id=m["poly_market_id"],
+            kalshi_id=m["kalshi_market_id"],
+            confidence=m["confidence"],
+            note=m["note"],
+            outcome_map={p["poly_outcome"]: p["kalshi_outcome"] for p in m["outcome_map"]},
         )
         for m in data["matches"]
     ]

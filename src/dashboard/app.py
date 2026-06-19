@@ -20,8 +20,14 @@ SPORTS = {
 }
 DEFAULT_SPORTS = ["MLB", "WNBA", "NFL"]  # in-season as of June 2026
 
-SOURCE_LABEL = {"kalshi": "Kalshi", "odds_api": "DraftKings"}
-SOURCE_CLASS = {"kalshi": "kalshi", "odds_api": "book"}
+SOURCE_LABEL = {
+    "kalshi": "Kalshi", "odds_api": "Sportsbook",
+    "draftkings": "DraftKings", "fanduel": "FanDuel", "betmgm": "BetMGM",
+    "betrivers": "BetRivers", "williamhill_us": "Caesars", "caesars": "Caesars",
+    "espnbet": "ESPN BET", "fanatics": "Fanatics", "ballybet": "Bally",
+    "hardrockbet": "Hard Rock",
+}
+SOURCE_CLASS = {"kalshi": "kalshi"}  # everything else renders as a 'book' chip
 
 # Edge meter range (fraction). 0% = break-even line; >0 = arbitrage.
 EDGE_MIN, EDGE_MAX = -0.06, 0.03
@@ -49,7 +55,24 @@ CSS = """
 .leg .src.book { background:rgba(14,165,233,0.22); color:#38bdf8; }
 .leg .odds { opacity:0.75; font-variant-numeric:tabular-nums; }
 .leg .stake { margin-left:auto; font-weight:700; color:#16a34a; font-variant-numeric:tabular-nums; }
+.leg .stake small { font-weight:500; opacity:0.7; }
 .ribbon { font-size:0.7rem; font-weight:700; color:#16a34a; margin-top:8px; }
+.when { font-size:0.74rem; opacity:0.7; margin:9px 0 2px; }
+details.more { margin-top:9px; font-size:0.8rem; }
+details.more summary { cursor:pointer; opacity:0.7; font-size:0.74rem; list-style:none; }
+details.more summary:hover { opacity:1; }
+details.more summary::-webkit-details-marker { display:none; }
+details.more summary::before { content:'▸ '; }
+details.more[open] summary::before { content:'▾ '; }
+.det { margin-top:8px; padding-top:8px; border-top:1px dashed rgba(128,128,128,0.25); }
+.det-row { margin:3px 0; opacity:0.85; }
+.det-row b { opacity:0.6; font-weight:600; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em; margin-right:6px; }
+table.board { width:100%; border-collapse:collapse; margin-top:7px; font-variant-numeric:tabular-nums; }
+table.board th { text-align:right; font-size:0.7rem; opacity:0.55; font-weight:600; padding:2px 6px; }
+table.board th:first-child { text-align:left; }
+table.board td { text-align:right; padding:2px 6px; font-size:0.82rem; }
+table.board td:first-child { text-align:left; font-weight:600; }
+table.board td.best { color:#16a34a; font-weight:700; }
 </style>
 """
 
@@ -68,6 +91,66 @@ def _meter(edge):
     return left * 100, max(width * 100, 0.0)
 
 
+def _fmt_time(ts):
+    """'Thu Jun 18, 7:36 PM' in the viewer's local timezone (cross-platform)."""
+    if not ts:
+        return "time TBD"
+    lt = time.localtime(ts)
+    hour = lt.tm_hour % 12 or 12
+    ampm = "AM" if lt.tm_hour < 12 else "PM"
+    return f"{time.strftime('%a %b', lt)} {lt.tm_mday}, {hour}:{lt.tm_min:02d} {ampm}"
+
+
+def _relative(ts):
+    """Human 'in 3h 12m' / 'live now' relative to now."""
+    if not ts:
+        return ""
+    d = ts - time.time()
+    if d < -3 * 3600:
+        return "finished"
+    if d < 0:
+        return "live now"
+    h, m = int(d // 3600), int((d % 3600) // 60)
+    if h >= 24:
+        return f"in {h // 24}d {h % 24}h"
+    return f"in {h}h {m:02d}m" if h else f"in {m}m"
+
+
+def _am_decimal(american):
+    """Decimal payout for American odds — higher is the better line."""
+    return 1 + (american / 100 if american > 0 else 100 / abs(american))
+
+
+def _board(r):
+    """Two-column table per team: Kalshi vs the best book (named), winner green."""
+    by_team = {}  # team -> {'kalshi': american, 'book': (american, book_key)}
+    for q in (r.quotes or []):
+        slot = by_team.setdefault(q.team, {})
+        if q.source == "kalshi":
+            slot["kalshi"] = q.american
+        else:  # keep the best book line for the team
+            cur = slot.get("book")
+            if cur is None or _am_decimal(q.american) > _am_decimal(cur[0]):
+                slot["book"] = (q.american, q.source)
+    best_src = {leg.team: leg.source for leg in r.legs}
+    rows = ""
+    for team, s in by_team.items():
+        k = s.get("kalshi")
+        k_cls = " class='best'" if best_src.get(team) == "kalshi" else ""
+        k_cell = f"<td{k_cls}>{k:+.0f}</td>" if k is not None else "<td>—</td>"
+        b = s.get("book")
+        if b:
+            b_am, b_key = b
+            b_cls = " class='best'" if best_src.get(team) == b_key else ""
+            b_cell = (f"<td{b_cls}>{b_am:+.0f} "
+                      f"<small>{SOURCE_LABEL.get(b_key, b_key)}</small></td>")
+        else:
+            b_cell = "<td>—</td>"
+        rows += f"<tr><td>{team}</td>{k_cell}{b_cell}</tr>"
+    return (f"<table class='board'><tr><th></th><th>Kalshi</th>"
+            f"<th>Best book</th></tr>{rows}</table>")
+
+
 def render_card(sport_label, r):
     status = _status(r)
     left, width = _meter(r.edge)
@@ -75,24 +158,39 @@ def render_card(sport_label, r):
     for leg in r.legs:
         src_cls = SOURCE_CLASS.get(leg.source, "book")
         src_lbl = SOURCE_LABEL.get(leg.source, leg.source)
-        stake = f"<span class='stake'>${leg.stake:.2f}</span>" if r.is_arb else ""
+        price = f"{leg.implied_prob * 100:.0f}¢" if leg.contracts else f"{leg.implied_prob:.0%}"
+        if not r.is_arb:
+            action = ""
+        elif leg.contracts:  # Kalshi: whole-contract quantity is what you enter
+            action = f"<span class='stake'>×{leg.contracts} <small>(${leg.stake:.0f})</small></span>"
+        else:               # Sportsbook: dollar stake (cents are fine here)
+            action = f"<span class='stake'>${leg.stake:.2f}</span>"
         legs_html += (
             f"<div class='leg'><span class='team'>{leg.team}</span>"
             f"<span class='src {src_cls}'>{src_lbl}</span>"
-            f"<span class='odds'>{leg.american:+.0f} · {leg.implied_prob:.0%}</span>{stake}</div>"
+            f"<span class='odds'>{leg.american:+.0f} · {price}</span>{action}</div>"
         )
     ribbon = (
-        f"<div class='ribbon'>✅ Lock ${r.profit:.2f} profit on ${r.bankroll:.0f} staked</div>"
-        if r.is_arb else ""
+        f"<div class='ribbon'>✅ Lock ${r.profit:.2f} on ${r.staked:.0f} staked "
+        f"({r.roi:+.1%})</div>" if r.is_arb else ""
+    )
+    when = f"<div class='when'>🗓 {_fmt_time(r.start_time)} · {_relative(r.start_time)}</div>"
+    details = (
+        "<details class='more'><summary>Game details &amp; all prices</summary>"
+        "<div class='det'>"
+        f"<div class='det-row'><b>Matchup</b>{r.matchup_full or r.game}</div>"
+        f"<div class='det-row'><b>Starts</b>{_fmt_time(r.start_time)} ({_relative(r.start_time)})</div>"
+        f"{_board(r)}</div></details>"
     )
     return (
         f"<div class='arb-card {status}'>"
         f"<div class='card-head'><span class='matchup'>{r.game}"
         f"<span class='sport-tag'>{sport_label}</span></span>"
         f"<span class='edge-pill {status}'>{r.edge:+.2%}</span></div>"
+        f"{when}"
         f"<div class='meter'><div class='meter-zero'></div>"
         f"<div class='meter-fill {status}' style='left:{left:.1f}%; width:{width:.1f}%'></div></div>"
-        f"<div class='legs'>{legs_html}</div>{ribbon}</div>"
+        f"<div class='legs'>{legs_html}</div>{ribbon}{details}</div>"
     )
 
 
@@ -116,7 +214,7 @@ def main():
     st.set_page_config(page_title="Betting Market Arb Detector", layout="wide")
     st.markdown(CSS, unsafe_allow_html=True)
     st.title("🎯 Betting Market Arb Detector")
-    st.caption("Kalshi vs DraftKings · live moneyline arbitrage · fees & vig included")
+    st.caption("Kalshi vs major US sportsbooks · live moneyline arbitrage · fees & vig included")
 
     try:
         Settings.validate()
@@ -157,9 +255,12 @@ def main():
     cards = "".join(render_card(label, r) for label, r in data["items"])
     st.markdown(f"<div class='arb-wrap'>{cards}</div>", unsafe_allow_html=True)
     st.caption(
-        "Edge = 1 − (sum of effective costs incl. Kalshi fees + DraftKings vig). "
+        "Edge = 1 − (sum of effective costs incl. Kalshi fees + sportsbook vig). "
+        "Each book leg shows the **best line across major US books** (named on the card). "
         "Green meter crossing the center line = profitable arb. "
-        "Sportsbook legs must be placed manually (no betting API)."
+        "**×N = buy N whole Kalshi contracts** at the ¢ limit price (that's the "
+        "number you enter in the app); sportsbook legs show a $ stake. "
+        "All legs are placed manually — no betting API."
     )
 
 

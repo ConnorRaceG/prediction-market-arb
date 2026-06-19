@@ -9,7 +9,7 @@ separates real arbs from phantom ones:
     where P is the price in dollars. (Rounds up to the next cent per order;
     we use the continuous rate for sizing/EV.)
 
-  - DraftKings (via The Odds API): the vig is already BAKED INTO the line, so
+  - Sportsbooks (via The Odds API): the vig is already BAKED INTO the line, so
     the implied probability we read is already the true cost. No add-on.
 
 NOTE: Verify the current Kalshi rate for your specific market — sports markets

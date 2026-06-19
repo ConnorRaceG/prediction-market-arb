@@ -50,3 +50,6 @@ Thumbs.db
 
 # Scrape artifacts (transient captured JSON)
 scripts/dk_capture/
+
+# Claude Code local config
+.claude/

@@ -29,9 +29,6 @@ class Settings:
     # Arb thresholds (percent)
     MIN_ARB_MARGIN = 1.0  # Only show arbs with >1% edge after fees
 
-    # Mappings for event/outcome name normalization
-    MAPPINGS_FILE = project_root / "config" / "mappings.yaml"
-
     @classmethod
     def validate(cls):
         """Check that required secrets are set."""
