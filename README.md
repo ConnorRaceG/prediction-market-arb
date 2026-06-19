@@ -1,39 +1,32 @@
 # prediction-market-arb
 
-Detects **risk-free arbitrage** between [Kalshi](https://kalshi.com) (a regulated prediction market) and major US sportsbooks — and between Kalshi and [Polymarket](https://polymarket.com) — by pricing the *same real-world outcome* on two venues, fees included, and flagging when the two sides sum to less than $1.
+Finds risk-free arbitrage between Kalshi and US sportsbooks, and between Kalshi and Polymarket. It prices the same real-world outcome on two venues, includes the fees, and flags any time the two sides add up to less than $1.
 
-> Born out of catching a ~20% spread on a novelty market — the Nathan's Hot Dog Eating Contest, of all things — between Kalshi and DraftKings. This is the systematic version of that hunch.
+I started this after noticing about a 20% gap on the Nathan's Hot Dog Eating Contest between Kalshi and DraftKings. Figured if it shows up once it shows up elsewhere, so I built something to find it automatically.
 
-A manual-refresh Streamlit dashboard shows each opportunity, the exact stakes to place, and how close every other game is to crossing into arb territory.
+There's a Streamlit dashboard that shows each opportunity, the exact stakes to place, and how close every other game is to becoming an arb. You refresh it manually.
 
 ## What it does
 
-- Pulls live odds from **Kalshi** + **~10 major US sportsbooks** (via The Odds API), one request each
-- Matches the same game across venues and keeps the **best line per outcome**
-- Models the **fees that kill naive arbs** — Kalshi's per-contract fee and the sportsbook's baked-in vig
-- Sizes each side to **whole Kalshi contracts**, so the displayed stake is actually placeable
-- Sorts by edge; expandable cards show full prices, game time, and a side-by-side price board
+- Pulls live odds from Kalshi and ~10 US sportsbooks (through The Odds API), one request each
+- Matches the same game across venues and keeps the best line per outcome
+- Includes the fees that kill most naive arbs: Kalshi's per-contract fee and the sportsbook's baked-in vig
+- Sizes each side in whole Kalshi contracts, so the stake it shows is the number you actually enter
+- Sorts by edge and shows the full price board on each card
 
-## Why it's harder than it looks
-
-This is where most "arb finders" quietly lose money:
-
-- **Fees are decisive.** On a real game, a +2.5% *gross* edge collapsed to +0.74% *net* once Kalshi's fee was applied — below the threshold to bet. Ignore fees and you chase edges that aren't there. → [`src/arb/fees.py`](src/arb/fees.py)
-- **Date-aware matching.** A two-game series shares the same pair of teams; keying on teams alone merges different days and invents arbs from mismatched odds. Markets are keyed on **(team-set, ET game date)**. → [`src/matching/matcher.py`](src/matching/matcher.py)
-- **Whole-contract sizing.** Kalshi sells integer contracts, not dollar amounts. Sizing anchors to *N contracts* so the number you see is the number you actually enter. → [`src/arb/sizing.py`](src/arb/sizing.py)
-- **Best line across books.** DraftKings only posts the imminent slate; pulling every major book in a single Odds API call roughly doubled matched games and tightened the edges.
+A couple of things that took real work to get right: fees move the answer a lot (a +2.5% gross edge on one game dropped to +0.74% after Kalshi's fee, which is below the line to bet), and matching has to key on the game date as well as the teams, otherwise a two-game series with the same teams merges different days and invents arbs that aren't there.
 
 ## Architecture
 
-Three independent tracks, sharing the same fee/sizing math but matched differently:
+Three separate tracks. They share the same fee and sizing math but match games differently.
 
 | Track | Venues | Matching | Status |
 |---|---|---|---|
-| **Deterministic** | Kalshi × sportsbooks | per-sport team registry (exact, free) | core |
-| **Novelty** | DraftKings novelty × Kalshi | semantic, via Claude (no team key exists) | working |
-| **Polymarket** | Polymarket × Kalshi | semantic, via Claude (prediction vs prediction) | working |
+| Deterministic | Kalshi x sportsbooks | per-sport team registry (exact, free) | core |
+| Novelty | DraftKings novelty x Kalshi | semantic, via Claude (no team key exists) | working |
+| Polymarket | Polymarket x Kalshi | semantic, via Claude (prediction vs prediction) | working |
 
-The deterministic path never loads the LLM or browser dependencies — they're imported lazily, only when you run a novelty or Polymarket scan.
+The deterministic path never loads the LLM or browser dependencies. Those are imported lazily, only when you run a novelty or Polymarket scan.
 
 ```
 src/
@@ -41,7 +34,7 @@ src/
 ├── timeutil.py                # ET game-date helpers (timezone alignment)
 ├── adapters/                  # data sources -> normalized Markets
 │   ├── kalshi.py              #   Kalshi API (RSA-PSS auth)
-│   ├── odds_api.py            #   The Odds API (best line across major US books)
+│   ├── odds_api.py            #   The Odds API (best line across US books)
 │   ├── dk_novelty.py          #   DraftKings novelty scraper (Playwright)
 │   └── polymarket.py          #   Polymarket Gamma API
 ├── matching/
@@ -61,17 +54,17 @@ tests/                         # deterministic + novelty detector unit tests
 
 ## Setup
 
-**1. Install dependencies**
+1. Install dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-**2. Get API credentials**
-- **Kalshi** — sign up at [kalshi.com](https://kalshi.com), create an API key under Account → API, download the `.pem`, and save it to `.secrets/kalshi.pem`
-- **The Odds API** — sign up at [the-odds-api.com](https://the-odds-api.com) and copy your key
-- **Anthropic** *(optional)* — only needed for the novelty / Polymarket LLM matching; get a key at [console.anthropic.com](https://console.anthropic.com)
+2. Get API credentials
+- Kalshi: sign up at [kalshi.com](https://kalshi.com), create an API key under Account > API, download the `.pem`, save it to `.secrets/kalshi.pem`
+- The Odds API: sign up at [the-odds-api.com](https://the-odds-api.com) and copy your key
+- Anthropic (optional, only for the novelty and Polymarket matching): get a key at [console.anthropic.com](https://console.anthropic.com)
 
-**3. Configure environment**
+3. Configure environment
 ```bash
 cp .env.example .env   # then fill in your keys
 ```
@@ -82,7 +75,7 @@ KALSHI_KEY_FILE=.secrets/kalshi.pem
 ANTHROPIC_API_KEY=sk-ant-...     # optional
 ```
 
-**4. Validate + run**
+4. Validate and run
 ```bash
 python config/settings.py            # prints [OK] when configured
 streamlit run src/dashboard/app.py   # the dashboard
@@ -98,18 +91,18 @@ python -m tests.test_novelty_detector    # cross-venue Dutch-book sizing
 
 ## Scope
 
-- **Detection, not execution.** Sportsbooks have no betting API, so bets are placed manually — the tool shows the edge and the exact stakes; you execute. (Kalshi↔Polymarket is detection-only too: Polymarket isn't tradeable from every US state yet.)
-- **Top-of-book.** Uses the best available price; order-book depth is a known next step.
-- Personal project — built and run for myself, cleaned up for sharing.
+- Detection, not execution. Sportsbooks have no betting API, so you place the bets yourself. The tool shows the edge and the exact stakes. Kalshi/Polymarket is detection-only too, since Polymarket isn't tradeable from every US state yet.
+- Top-of-book only. It uses the best available price and doesn't look at order-book depth. That's the main next step.
+- Personal project, built and run for myself.
 
 ## What's next
 
-- Order-book depth for honest sizing at scale
-- Alerting when an arb appears (currently manual refresh)
-- Filtering Polymarket by topic to surface live Kalshi↔Polymarket overlap
+- Order-book depth so the sizing is honest at scale
+- Alerting when an arb shows up, instead of manual refresh
+- Filtering Polymarket by topic to surface more Kalshi/Polymarket overlap
 
 ## Glossary
 
-- **Arb** — a riskless profit from pricing the same outcome differently across venues
-- **Vig** — a sportsbook's built-in margin (why moneylines imply >100% total probability)
-- **Kalshi fee** — proportional to price and outcome probability; roughly 0.5% per side
+- Arb: riskless profit from the same outcome being priced differently on two venues
+- Vig: a sportsbook's built-in margin, the reason moneylines imply more than 100% total probability
+- Kalshi fee: scales with price and outcome probability, roughly 0.5% per side
