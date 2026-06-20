@@ -154,6 +154,7 @@ def _title_tokens(s: str) -> set[str]:
 @dataclass
 class DKPredictionsPipelineResult:
     comparisons: list["FuturesComparison"]  # one per matched board, cheapest lock first
+    unmatched: list[str]                    # DK board titles with no Kalshi counterpart
     n_dk: int
     n_kalshi: int
     n_matched: int
@@ -205,8 +206,12 @@ def run_dk_predictions_detection(
                    for mt in matches]
     comparisons.sort(key=lambda c: c.best_lock if c.best_lock is not None else 9)
 
+    matched_ids = {mt.dk_market_id for mt in matches}
+    unmatched = [m.event_name for m in dk_markets if m.market_id not in matched_ids]
+
     return DKPredictionsPipelineResult(
         comparisons=comparisons,
+        unmatched=unmatched,
         n_dk=len(dk_markets),
         n_kalshi=len(kalshi_markets),
         n_matched=len(matches),

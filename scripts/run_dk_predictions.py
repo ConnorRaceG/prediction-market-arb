@@ -41,6 +41,11 @@ def main():
                   f"lock {_c(c.lock_cost)} ({c.lock_desc}){tag}")
         print()
 
+    if pr.unmatched:
+        print(f"DK boards with no Kalshi counterpart ({len(pr.unmatched)}):")
+        for title in pr.unmatched:
+            print(f"   - {title}")
+
 
 if __name__ == "__main__":
     main()
