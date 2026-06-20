@@ -3,10 +3,11 @@ Streamlit dashboard for arb detection.
 
 Run with:  streamlit run src/dashboard/app.py
 
-Shows three detection tracks in one edge-sorted grid: the deterministic sports
+Shows the detection tracks in one edge-sorted grid: the deterministic sports
 track (Kalshi vs US sportsbooks) always on, plus optional LLM-matched novelty
-(DraftKings) and Polymarket tracks. Each track keeps its own pipeline; they're
-unified only as cards here (see src/dashboard/cards.py).
+(DraftKings) and Polymarket tracks and the deterministic DK Predictions futures
+track. Each track keeps its own pipeline; they're unified only as cards here
+(see src/dashboard/cards.py).
 """
 
 import time
@@ -16,8 +17,11 @@ from src.pipeline import (
     run_arb_detection,
     run_novelty_detection,
     run_polymarket_detection,
+    run_dk_predictions_detection,
 )
-from src.dashboard.cards import from_sports, from_novelty, from_polymarket
+from src.dashboard.cards import (
+    from_sports, from_novelty, from_polymarket, from_futures,
+)
 from config.settings import Settings
 
 # Display label -> canonical sport key (same keys The Odds API uses)
@@ -78,6 +82,13 @@ table.board th:first-child { text-align:left; }
 table.board td { text-align:right; padding:2px 6px; font-size:0.82rem; }
 table.board td:first-child { text-align:left; font-weight:600; }
 table.board td.best { color:#16a34a; font-weight:700; }
+table.cmp { width:100%; border-collapse:collapse; margin-top:9px; font-variant-numeric:tabular-nums; }
+table.cmp th { font-size:0.66rem; opacity:0.55; font-weight:600; padding:2px 6px; text-align:right; }
+table.cmp th:first-child { text-align:left; }
+table.cmp td { padding:2px 6px; font-size:0.82rem; text-align:right; }
+table.cmp td:first-child { text-align:left; font-weight:600; }
+table.cmp tr.arb td { color:#16a34a; font-weight:700; }
+table.cmp td.lock { opacity:0.7; }
 </style>
 """
 
@@ -160,7 +171,54 @@ def _details(view):
             f"<div class='det'>{body}</div></details>")
 
 
+def _cents(p):
+    return f"{p * 100:.0f}¢" if p is not None else "—"
+
+
+def _comp_table(rows):
+    """DK-vs-Kalshi per-candidate table for a futures board; arb rows in green."""
+    body = ""
+    for r in rows:
+        cls = " class='arb'" if r.is_arb else ""
+        body += (f"<tr{cls}><td>{r.name}</td><td>{_cents(r.dk_yes)}</td>"
+                 f"<td>{_cents(r.kalshi_yes)}</td>"
+                 f"<td class='lock'>{_cents(r.lock_cost)}</td></tr>")
+    return ("<table class='cmp'><tr><th></th><th>DK</th><th>Kalshi</th>"
+            f"<th>Lock</th></tr>{body}</table>")
+
+
+def render_futures_card(view):
+    """A DK-Predictions-vs-Kalshi board: a per-candidate comparison, not 2 legs."""
+    status = _status(view)
+    left, width = _meter(view.edge)
+    rows = view.comparison or []
+    arbs = [r for r in rows if r.is_arb]
+    # Lead with arbs (or the cheapest locks); the rest go in an expander.
+    lead = (arbs or rows)[:5]
+    rest = [r for r in rows if r not in lead]
+    ribbon = ""
+    if arbs:
+        names = ", ".join(r.name for r in arbs[:3])
+        ribbon = f"<div class='ribbon'>✅ {len(arbs)} candidate arb(s): {names}</div>"
+    more = (f"<details class='more'><summary>All {len(rows)} candidates</summary>"
+            f"<div class='det'>{_comp_table(rows)}</div></details>" if rest else "")
+    subtitle = f"<div class='sub'>{view.subtitle}</div>" if view.subtitle else ""
+    flag = "<div><span class='intel'>detection only</span></div>" if view.detection_only else ""
+    return (
+        f"<div class='arb-card {status}'>"
+        f"<div class='card-head'><span class='matchup'>{view.title}"
+        f"<span class='sport-tag'>{view.tag}</span></span>"
+        f"<span class='edge-pill {status}'>{view.edge:+.2%}</span></div>"
+        f"{subtitle}{flag}"
+        f"<div class='meter'><div class='meter-zero'></div>"
+        f"<div class='meter-fill {status}' style='left:{left:.1f}%; width:{width:.1f}%'></div></div>"
+        f"{ribbon}{_comp_table(lead)}{more}</div>"
+    )
+
+
 def render_card(view):
+    if view.comparison is not None:  # futures boards use the comparison-table card
+        return render_futures_card(view)
     status = _status(view)
     left, width = _meter(view.edge)
     legs_html = ""
@@ -197,15 +255,17 @@ def render_card(view):
     )
 
 
-def scan(sport_labels, bankroll, include_novelty, include_poly):
+def scan(sport_labels, bankroll, include_novelty, include_poly, include_futures):
     """Run every enabled track and return their cards in one edge-sorted list.
 
-    The sports track is cheap (HTTP only). The novelty and Polymarket tracks
-    scrape/call Claude, so they run only when ticked, and a failure in either
-    degrades to a warning instead of taking down the page.
+    The sports track is cheap (HTTP only). The novelty/Polymarket tracks scrape or
+    call Claude; the DK Predictions futures track scrapes several DK boards (slow but
+    deterministic, no API key). The optional tracks run only when ticked, and a
+    failure in any one degrades to a warning instead of taking down the page.
     """
     cards, n_matched, n_arbs, quota, warnings = [], 0, 0, None, []
-    steps = len(sport_labels) + int(include_novelty) + int(include_poly)
+    steps = (len(sport_labels) + int(include_novelty) + int(include_poly)
+             + int(include_futures))
     progress = st.progress(0.0, text="Scanning markets...")
     done = 0
 
@@ -242,6 +302,18 @@ def scan(sport_labels, bankroll, include_novelty, include_poly):
         done += 1
         progress.progress(done / steps)
 
+    if include_futures:
+        progress.progress(done / steps, text="Scanning DK Predictions futures × Kalshi (slow)...")
+        try:
+            fr = run_dk_predictions_detection(headless=True)
+            cards.extend(from_futures(c) for c in fr.comparisons)
+            n_matched += fr.n_matched
+            n_arbs += sum(c.n_arbs for c in fr.comparisons)
+        except Exception as e:
+            warnings.append(f"DK Predictions scan failed: {e}")
+        done += 1
+        progress.progress(done / steps)
+
     progress.empty()
     cards.sort(key=lambda c: c.edge, reverse=True)
     return {"cards": cards, "n_matched": n_matched, "n_arbs": n_arbs,
@@ -252,8 +324,8 @@ def main():
     st.set_page_config(page_title="Betting Market Arb Detector", layout="wide")
     st.markdown(CSS, unsafe_allow_html=True)
     st.title("🎯 Betting Market Arb Detector")
-    st.caption("Kalshi vs US sportsbooks, plus LLM-matched novelty & Polymarket · "
-               "live cross-venue arbitrage · fees & vig included")
+    st.caption("Kalshi vs US sportsbooks, LLM-matched novelty & Polymarket, and "
+               "DK Predictions futures · cross-venue arbitrage · fees & vig included")
 
     try:
         Settings.validate()
@@ -265,7 +337,7 @@ def main():
     sport_labels = st.sidebar.multiselect("Sports", list(SPORTS.keys()), default=DEFAULT_SPORTS)
     bankroll = st.sidebar.number_input("Bankroll ($)", min_value=10.0, value=100.0, step=10.0)
 
-    st.sidebar.markdown("**Extra tracks** · LLM-matched, slower")
+    st.sidebar.markdown("**Extra tracks** · slower, run on refresh")
     have_key = bool(Settings.ANTHROPIC_API_KEY)
     include_novelty = st.sidebar.checkbox(
         "Novelty (DraftKings × Kalshi)", value=False, disabled=not have_key)
@@ -273,20 +345,23 @@ def main():
         "Polymarket × Kalshi", value=False, disabled=not have_key)
     if not have_key:
         st.sidebar.caption("Set ANTHROPIC_API_KEY in .env to enable the LLM-matched tracks.")
-    else:
-        st.sidebar.caption("These scrape / call Claude, so they run only on refresh.")
+    include_futures = st.sidebar.checkbox(
+        "DK Predictions futures × Kalshi", value=False)
+    st.sidebar.caption("Futures is deterministic (no API key) but slow — it scrapes "
+                       "several DK Predictions boards.")
 
     refresh = st.sidebar.button("🔄 Refresh", type="primary", use_container_width=True)
     st.sidebar.caption("Each sport = 1 Odds API request per refresh.")
 
-    if not sport_labels and not include_novelty and not include_poly:
+    if not sport_labels and not (include_novelty or include_poly or include_futures):
         st.info("Pick at least one sport or enable a track in the sidebar.")
         return
 
     # Fetch on first load or when Refresh pressed (avoids burning API quota and
-    # re-running the slow LLM tracks on every widget interaction).
+    # re-running the slow scrape tracks on every widget interaction).
     if refresh or "scan" not in st.session_state:
-        st.session_state.scan = scan(sport_labels, bankroll, include_novelty, include_poly)
+        st.session_state.scan = scan(sport_labels, bankroll,
+                                     include_novelty, include_poly, include_futures)
     data = st.session_state.scan
 
     c1, c2, c3, c4 = st.columns(4)
@@ -312,9 +387,10 @@ def main():
     st.caption(
         "Edge = 1 − (sum of effective costs incl. Kalshi fees + sportsbook vig). "
         "Sports cards show the best line across major US books; NOVELTY and POLYMARKET "
-        "cards are matched by Claude (open the card to see the match confidence and why). "
-        "×N = buy N whole Kalshi contracts at the ¢ limit price; other legs show a $ stake. "
-        "All legs are placed manually — no betting API."
+        "cards are matched by Claude (open the card to see the match confidence and why); "
+        "DK × KALSHI futures cards compare every candidate on a board, with a Yes+No "
+        "lock cost (under $1 = arb). ×N = buy N whole Kalshi contracts at the ¢ limit "
+        "price; other legs show a $ stake. All legs are placed manually — no betting API."
     )
 
 

@@ -20,6 +20,7 @@ if TYPE_CHECKING:  # type hints only — never imported at runtime
     from src.arb.detector import ArbResult
     from src.arb.novelty_detector import NoveltyArbResult
     from src.arb.polymarket_detector import PolymarketArbResult
+    from src.arb.futures_detector import FuturesComparison
 
 # Display label per source/venue key. Sports book keys come from The Odds API;
 # the novelty/Polymarket venues are the literal venue names.
@@ -69,8 +70,18 @@ class BoardRow:
 
 
 @dataclass
+class ComparisonRow:
+    """One candidate's DK-vs-Kalshi price row (futures cards only)."""
+    name: str
+    dk_yes: float | None       # cost to buy YES on DK (implied prob)
+    kalshi_yes: float | None   # cost to buy YES on Kalshi (implied prob)
+    lock_cost: float | None    # cheapest cross-venue Yes+No lock (<1 = arb)
+    is_arb: bool
+
+
+@dataclass
 class CardView:
-    track: str             # 'sports' | 'novelty' | 'polymarket'
+    track: str             # 'sports' | 'novelty' | 'polymarket' | 'futures'
     tag: str               # short label on the card (e.g. 'NFL', 'NOVELTY')
     title: str             # headline (matchup or event)
     edge: float
@@ -82,6 +93,7 @@ class CardView:
     subtitle: str | None = None       # secondary line (novelty market description)
     start_time: float | None = None   # sports only
     board: list[BoardRow] | None = None  # sports only (Kalshi vs best book)
+    comparison: list[ComparisonRow] | None = None  # futures only (per-candidate table)
     note: str | None = None           # novelty/poly: LLM match rationale
     confidence: float | None = None   # novelty/poly: LLM match confidence (0-1)
     detection_only: bool = False      # poly: flagged not tradeable from MA
@@ -190,4 +202,30 @@ def from_polymarket(r: "PolymarketArbResult") -> CardView:
         note=r.note,
         confidence=r.confidence,
         detection_only=True,
+    )
+
+
+def from_futures(comp: "FuturesComparison") -> CardView:
+    """A whole DK-Predictions-vs-Kalshi board becomes one comparison card.
+
+    Unlike the other tracks this isn't a 2-leg arb but a per-candidate table, so
+    `edge` is 1 - best lock cost (positive only when some candidate is a real
+    cross-venue arb) and the rows render as a comparison table, not legs.
+    """
+    rows = [ComparisonRow(c.name, c.dk_yes, c.kalshi_yes, c.lock_cost, c.is_arb)
+            for c in comp.candidates]
+    edge = (1 - comp.best_lock) if comp.best_lock is not None else -1.0
+    return CardView(
+        track="futures",
+        tag="DK × KALSHI",
+        title=comp.dk_event,
+        subtitle=f"vs Kalshi · {comp.kalshi_event}",
+        edge=edge,
+        is_arb=comp.n_arbs > 0,
+        legs=[],
+        profit=0.0,
+        staked=0.0,
+        roi=0.0,
+        comparison=rows,
+        detection_only=True,  # DK Predictions has no trading API; legs are manual
     )
