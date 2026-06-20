@@ -47,6 +47,8 @@ class FuturesComparison:
     n_shared: int
     n_arbs: int
     best_lock: float | None             # min lock cost across candidates (<1 = arb)
+    confidence: float | None = None     # LLM match confidence (None = deterministic match)
+    note: str = ""                      # LLM rationale for the match (if any)
 
 
 def _candidates(market: Market) -> dict[str, dict]:
@@ -55,8 +57,13 @@ def _candidates(market: Market) -> dict[str, dict]:
 
 
 def compare_futures(match: "FuturesMatch", dk: Market, kalshi: Market,
-                    min_margin_pct: float | None = None) -> FuturesComparison:
-    """Build the per-candidate DK-vs-Kalshi comparison and flag binary arbs."""
+                    min_margin_pct: float | None = None,
+                    confidence: float | None = None, note: str = "") -> FuturesComparison:
+    """Build the per-candidate DK-vs-Kalshi comparison and flag binary arbs.
+
+    `confidence`/`note` are set for LLM (semantic-title) matches and left empty for
+    deterministic name-overlap matches.
+    """
     threshold = (Settings.MIN_ARB_MARGIN if min_margin_pct is None else min_margin_pct) / 100.0
     dk_c, k_c = _candidates(dk), _candidates(kalshi)
 
@@ -95,4 +102,6 @@ def compare_futures(match: "FuturesMatch", dk: Market, kalshi: Market,
         n_shared=len(rows),
         n_arbs=n_arbs,
         best_lock=best_lock,
+        confidence=confidence,
+        note=note,
     )

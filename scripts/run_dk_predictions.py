@@ -33,8 +33,11 @@ def main():
     for comp in pr.comparisons:
         bl = f"{comp.best_lock * 100:.0f}c" if comp.best_lock is not None else "-"
         flag = f"   *** {comp.n_arbs} ARB(S) ***" if comp.n_arbs else ""
+        how = f", LLM {comp.confidence:.0%}" if comp.confidence is not None else ""
         print(f"== {comp.dk_event}  <->  {comp.kalshi_event}  "
-              f"({comp.n_shared} shared, best lock {bl}){flag}")
+              f"({comp.n_shared} shared, best lock {bl}{how}){flag}")
+        if comp.note:
+            print(f"     match: {comp.note}")
         for c in comp.candidates:
             tag = "  <== ARB" if c.is_arb else ""
             print(f"    {c.name:24s} DK {_c(c.dk_yes)}  Kalshi {_c(c.kalshi_yes)}   "

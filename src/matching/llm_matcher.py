@@ -218,3 +218,105 @@ def match_polymarket_kalshi(poly_markets: list[Market],
         )
         for m in data["matches"]
     ]
+
+
+# --- DK Predictions <-> Kalshi futures (title-level semantic match) ---
+# The deterministic name-overlap matcher handles distinctive multi-candidate boards
+# (Person of the Year), but it can't match binary / generic-candidate boards (a Yes/No
+# recession market, a Republicans/Democrats Senate market) whose meaning lives in the
+# TITLE, not the candidates. This matcher reads titles and picks the same-question
+# Kalshi event. It takes Kalshi's cheap (ticker, title) index — not full markets — so
+# only the events it matches get fetched in full afterwards.
+
+_FUTURES_SYSTEM = (
+    "You match prediction-market 'futures' boards across two venues: DraftKings "
+    "Predictions and Kalshi. Each DraftKings board is one question (e.g. 'US Recession "
+    "in 2026?'). For each board pick the SINGLE Kalshi event that resolves on the exact "
+    "same real-world question, so a position on one venue can be hedged on the other. "
+    "Differently-worded titles can be the same question ('US Recession in 2026?' is the "
+    "same as 'Recession this year?'); a different subject is NOT a match (a Texas Senate "
+    "race is not a Georgia Senate race; 2026 is not 2028; the US House is not the US "
+    "Senate). Return a Kalshi match only when you are confident it is the same "
+    "resolution; omit a board entirely when nothing lines up. Be conservative — a wrong "
+    "match loses real money."
+)
+
+_FUTURES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "matches": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "dk_market_id": {"type": "string"},
+                    "kalshi_market_id": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "note": {"type": "string"},
+                },
+                "required": ["dk_market_id", "kalshi_market_id", "confidence", "note"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["matches"],
+    "additionalProperties": False,
+}
+
+
+@dataclass
+class FuturesLLMMatch:
+    dk_market_id: str
+    kalshi_ticker: str
+    confidence: float
+    note: str
+
+
+def _describe_boards(markets: list[Market]) -> str:
+    blocks = []
+    for m in markets:
+        names = ", ".join(o.name for o in m.outcomes[:10])
+        blocks.append(f"[DK id={m.market_id}] {m.event_name!r} | candidates: {names}")
+    return "\n".join(blocks) if blocks else "(none)"
+
+
+def _describe_index(index: list[tuple[str, str]]) -> str:
+    return "\n".join(f"[K id={tk}] {title!r}" for tk, title in index) or "(none)"
+
+
+def match_futures_llm(dk_markets: list[Market],
+                      kalshi_index: list[tuple[str, str]]) -> list[FuturesLLMMatch]:
+    """Title-level semantic match of DK Predictions boards to Kalshi events."""
+    if not Settings.ANTHROPIC_API_KEY:
+        raise ValueError(
+            "ANTHROPIC_API_KEY not set — add it to .env to use the futures LLM matcher."
+        )
+    if not dk_markets or not kalshi_index:
+        return []
+
+    user = (
+        "DraftKings boards:\n" + _describe_boards(dk_markets)
+        + "\n\nKalshi events:\n" + _describe_index(kalshi_index)
+        + "\n\nReturn the matches."
+    )
+
+    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+    resp = client.messages.create(
+        model=Settings.MATCHER_MODEL,
+        max_tokens=4000,
+        system=_FUTURES_SYSTEM,
+        messages=[{"role": "user", "content": user}],
+        output_config={"format": {"type": "json_schema", "schema": _FUTURES_SCHEMA}},
+    )
+
+    text = next(b.text for b in resp.content if b.type == "text")
+    data = json.loads(text)
+    return [
+        FuturesLLMMatch(
+            dk_market_id=m["dk_market_id"],
+            kalshi_ticker=m["kalshi_market_id"],
+            confidence=m["confidence"],
+            note=m["note"],
+        )
+        for m in data["matches"]
+    ]

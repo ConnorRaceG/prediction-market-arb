@@ -203,6 +203,10 @@ def render_futures_card(view):
     more = (f"<details class='more'><summary>All {len(rows)} candidates</summary>"
             f"<div class='det'>{_comp_table(rows)}</div></details>" if rest else "")
     subtitle = f"<div class='sub'>{view.subtitle}</div>" if view.subtitle else ""
+    if view.confidence is not None:  # LLM (semantic-title) match — show why
+        why = f" · {view.note}" if view.note else ""
+        subtitle += (f"<div class='sub'>🤖 matched by Claude · "
+                     f"{view.confidence:.0%}{why}</div>")
     flag = "<div><span class='intel'>detection only</span></div>" if view.detection_only else ""
     return (
         f"<div class='arb-card {status}'>"

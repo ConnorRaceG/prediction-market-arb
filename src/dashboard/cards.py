@@ -227,5 +227,7 @@ def from_futures(comp: "FuturesComparison") -> CardView:
         staked=0.0,
         roi=0.0,
         comparison=rows,
+        confidence=comp.confidence,  # set for LLM (semantic-title) matches, else None
+        note=comp.note,
         detection_only=True,  # DK Predictions has no trading API; legs are manual
     )

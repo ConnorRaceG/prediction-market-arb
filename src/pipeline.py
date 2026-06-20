@@ -10,6 +10,7 @@ from src.adapters.kalshi import KalshiAdapter
 from src.adapters.odds_api import OddsApiAdapter
 from src.matching.matcher import match_markets
 from src.arb.detector import detect_arbs, ArbResult
+from config.settings import Settings
 
 if TYPE_CHECKING:  # novelty/polymarket/futures paths pull Playwright/Anthropic; keep lazy
     from src.arb.novelty_detector import NoveltyArbResult
@@ -151,6 +152,37 @@ def _title_tokens(s: str) -> set[str]:
     return {t for t in normalize_name(s).split() if t not in _TITLE_STOP and len(t) > 1}
 
 
+# Common words that don't distinguish one futures board from another — dropped when
+# building the LLM matcher's candidate pool so it keys on the meaningful nouns.
+_FUTURES_STOP = _TITLE_STOP | {
+    "us", "party", "win", "control", "controls", "based", "results", "midterm",
+    "midterms", "election", "elections", "winner", "date", "end", "next", "this", "year"}
+MIN_FUTURES_LLM_CONF = 0.70
+
+
+def _distinctive_tokens(s: str) -> set[str]:
+    from src.matching.futures_matcher import normalize_name
+    return {t for t in normalize_name(s).split() if t not in _FUTURES_STOP and len(t) > 2}
+
+
+def _kalshi_pool(dk_markets, index, per_board: int = 15) -> list[tuple[str, str]]:
+    """Kalshi events most likely to be a counterpart for the leftover DK boards: per
+    board, the events sharing the most distinctive title words. Bounds the LLM input
+    while keeping each board's real match in front of the model."""
+    chosen: dict[str, str] = {}
+    for dk in dk_markets:
+        dts = _distinctive_tokens(dk.event_name)
+        if not dts:
+            continue
+        scored = sorted(
+            ((len(_distinctive_tokens(t) & dts), tk, t) for tk, t in index
+             if _distinctive_tokens(t) & dts),
+            reverse=True)
+        for _, tk, t in scored[:per_board]:
+            chosen[tk] = t
+    return list(chosen.items())
+
+
 @dataclass
 class DKPredictionsPipelineResult:
     comparisons: list["FuturesComparison"]  # one per matched board, cheapest lock first
@@ -169,20 +201,29 @@ def run_dk_predictions_detection(
     categories=("culture", "politics", "economics", "business"),
     max_groups_per_cat: int = 15,
     headless: bool = False,
-    kalshi_categories=("Entertainment", "Politics", "Economics", "Financials"),
+    kalshi_categories=("Entertainment", "Politics", "Economics", "Financials",
+                       "Elections", "Companies"),
     max_kalshi_fetch: int = 40,
+    use_llm: bool = True,
 ) -> DKPredictionsPipelineResult:
     """
     DK Predictions <-> Kalshi futures scan (detection only).
 
-    Scrape DK Predictions boards (prices read from DK's own API, not the screen),
-    then pull only the Kalshi events whose titles share words with a DK board, match
-    boards by shared candidate names (deterministic, no LLM), and compare prices to
-    flag cross-venue Yes/No arbs. Imports are deferred so the sports path stays light;
-    the DK scrape needs a browser, Kalshi needs its usual creds, no Anthropic key.
+    Scrape DK Predictions boards (prices read from DK's own API, not the screen) and
+    match them to Kalshi two ways:
+      1. deterministic candidate-name overlap, for distinctive multi-candidate boards
+         (Person of the Year);
+      2. for whatever is left, an LLM semantic title match, for the binary / political
+         / economic boards whose meaning is in the title, not the candidates
+         ('US Recession in 2026?' == Kalshi 'Recession this year?').
+    Then compare prices per candidate to flag cross-venue Yes/No arbs.
+
+    Imports are deferred so the sports path stays light; the DK scrape needs a browser,
+    Kalshi needs its usual creds, and the LLM step needs ANTHROPIC_API_KEY (skipped if
+    absent or use_llm is False).
     """
     from src.adapters.dk_predictions import DKPredictionsAdapter
-    from src.matching.futures_matcher import match_futures
+    from src.matching.futures_matcher import match_futures, FuturesMatch
     from src.arb.futures_detector import compare_futures
 
     dk_markets = DKPredictionsAdapter(headless=headless).fetch_markets(
@@ -190,31 +231,56 @@ def run_dk_predictions_detection(
 
     kalshi = KalshiAdapter()
     index = kalshi.fetch_event_index(kalshi_categories)
+    dk_by = {m.market_id: m for m in dk_markets}
+
+    # 1) Deterministic: title pre-filter -> fetch full markets -> candidate-name overlap.
     dk_tokens = [_title_tokens(d.event_name) for d in dk_markets]
     chosen = [(tk, title) for tk, title in index
               if any(len(_title_tokens(title) & dt) >= 2 for dt in dk_tokens)]
-    kalshi_markets = []
+    k_by = {}
     for tk, title in chosen[:max_kalshi_fetch]:
         m = kalshi.fetch_event_market(tk, title)
         if m is not None:
-            kalshi_markets.append(m)
+            k_by[m.market_id] = m
 
-    matches = match_futures(dk_markets, kalshi_markets)
-    dk_by = {m.market_id: m for m in dk_markets}
-    k_by = {m.market_id: m for m in kalshi_markets}
+    det_matches = match_futures(dk_markets, list(k_by.values()))
     comparisons = [compare_futures(mt, dk_by[mt.dk_market_id], k_by[mt.kalshi_market_id])
-                   for mt in matches]
-    comparisons.sort(key=lambda c: c.best_lock if c.best_lock is not None else 9)
+                   for mt in det_matches]
+    matched_ids = {mt.dk_market_id for mt in det_matches}
 
-    matched_ids = {mt.dk_market_id for mt in matches}
+    # 2) LLM semantic title match for the leftover boards (binary / political / economic).
+    leftover = [m for m in dk_markets if m.market_id not in matched_ids]
+    if use_llm and leftover and Settings.ANTHROPIC_API_KEY:
+        try:
+            from src.matching.llm_matcher import match_futures_llm
+            pool = _kalshi_pool(leftover, index)
+            pool_titles = dict(pool)
+            for lm in match_futures_llm(leftover, pool):
+                if lm.confidence < MIN_FUTURES_LLM_CONF or lm.dk_market_id in matched_ids:
+                    continue
+                km = k_by.get(lm.kalshi_ticker) or kalshi.fetch_event_market(
+                    lm.kalshi_ticker, pool_titles.get(lm.kalshi_ticker, ""))
+                if km is None:
+                    continue
+                k_by[km.market_id] = km
+                dkm = dk_by[lm.dk_market_id]
+                fm = FuturesMatch(dkm.market_id, km.market_id, dkm.event_name,
+                                  km.event_name, [], 0, 1.0, 1.0)
+                comparisons.append(compare_futures(fm, dkm, km,
+                                                   confidence=lm.confidence, note=lm.note))
+                matched_ids.add(lm.dk_market_id)
+        except Exception:
+            pass  # fail soft — keep the deterministic results
+
+    comparisons.sort(key=lambda c: c.best_lock if c.best_lock is not None else 9)
     unmatched = [m.event_name for m in dk_markets if m.market_id not in matched_ids]
 
     return DKPredictionsPipelineResult(
         comparisons=comparisons,
         unmatched=unmatched,
         n_dk=len(dk_markets),
-        n_kalshi=len(kalshi_markets),
-        n_matched=len(matches),
+        n_kalshi=len(k_by),
+        n_matched=len(matched_ids),
         timestamp=time.time(),
     )
 
