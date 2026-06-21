@@ -157,7 +157,9 @@ def _title_tokens(s: str) -> set[str]:
 _FUTURES_STOP = _TITLE_STOP | {
     "us", "party", "win", "control", "controls", "based", "results", "midterm",
     "midterms", "election", "elections", "winner", "date", "end", "next", "this", "year"}
-MIN_FUTURES_LLM_CONF = 0.70
+# Genuine cross-venue matches score 0.90-0.95; a false ECB-vs-Fed match scored 0.75,
+# so gate high. Borderline-but-real matches fall through rather than risk a false arb.
+MIN_FUTURES_LLM_CONF = 0.85
 
 
 def _distinctive_tokens(s: str) -> set[str]:

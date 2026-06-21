@@ -236,11 +236,16 @@ _FUTURES_SYSTEM = (
     "the exact same real-world question, and align every DraftKings outcome to its "
     "economically-equivalent Kalshi outcome (e.g. DraftKings 'Republicans' -> Kalshi "
     "'Republican Party'; 'Yes' -> 'Yes'). Differently-worded titles can be the same "
-    "question ('US Recession in 2026?' is the same as 'Recession this year?'); a "
-    "different subject is NOT a match (a Texas Senate race is not a Georgia Senate race; "
-    "2026 is not 2028; the US House is not the US Senate). Only return a match you are "
-    "confident shares the exact same resolution; omit a board entirely when nothing "
-    "lines up. Be conservative — a wrong match loses real money."
+    "question ('US Recession in 2026?' is the same as 'Recession this year?'). But a "
+    "different SUBJECT is never a match even when the structure looks identical: a "
+    "different institution or body (the European Central Bank / ECB is NOT the US "
+    "Federal Reserve / Fed; the Bank of England is neither), a different country, a "
+    "different company, a different office (US House is not US Senate), a different "
+    "place (Texas is not Georgia), or a different time (2026 is not 2028) all mean NO "
+    "match. Two rate-decision boards that name different central banks are different "
+    "markets. Only return a match you are confident shares the exact same resolution on "
+    "the exact same subject; omit a board entirely when nothing lines up. Be "
+    "conservative — a wrong match loses real money."
 )
 
 _FUTURES_SCHEMA = {
