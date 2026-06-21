@@ -87,10 +87,11 @@ def compare_futures(match: "FuturesMatch", dk: Market, kalshi: Market,
         dk_yes, dk_no = d.get("yes"), d.get("no")
         k_yes, k_no = k.get("yes"), k.get("no")
 
-        # Two ways to lock the binary; the Kalshi leg pays Kalshi's fee.
-        opt_a = (dk_yes + effective_cost("kalshi", k_no)) \
+        # Two ways to lock the binary; each leg pays its own venue's fee (Kalshi's
+        # proportional fee, DK Predictions' flat per-contract fee).
+        opt_a = (effective_cost("dk_predictions", dk_yes) + effective_cost("kalshi", k_no)) \
             if (dk_yes is not None and k_no is not None) else None   # Yes@DK + No@Kalshi
-        opt_b = (effective_cost("kalshi", k_yes) + dk_no) \
+        opt_b = (effective_cost("kalshi", k_yes) + effective_cost("dk_predictions", dk_no)) \
             if (k_yes is not None and dk_no is not None) else None   # Yes@Kalshi + No@DK
         options = [(opt_a, "Yes@DK + No@Kalshi"), (opt_b, "Yes@Kalshi + No@DK")]
         valid = [(c, desc) for c, desc in options if c is not None]

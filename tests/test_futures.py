@@ -120,16 +120,26 @@ def test_no_arb():
     print(f"  no_arb: best lock {comp.best_lock*100:.1f}c, 0 arbs")
 
 
-def test_kalshi_fee_applied():
-    # The Kalshi leg of the lock must carry Kalshi's fee, so the lock beats the naive sum.
+def test_both_fees_applied():
+    # Each leg of the lock carries its venue's fee: Kalshi's proportional fee AND
+    # DraftKings Predictions' flat per-contract fee. So the lock beats the naive sum.
     dk = _cand_market("dk_predictions", "dk", "E", [("A", 0.30, 0.74), ("B", 0.30, 0.74)])
     kalshi = _cand_market("kalshi", "k", "E", [("A", 0.40, 0.65), ("B", 0.40, 0.65)])
     comp = compare_futures(_match("dk", "k"), dk, kalshi)
 
-    a = comp.candidates[0]
-    assert a.lock_cost > 0.30 + 0.65                       # fee added on top of raw prices
-    assert abs(a.lock_cost - (0.30 + effective_cost("kalshi", 0.65))) < 1e-9
-    print(f"  kalshi_fee: lock {a.lock_cost*100:.2f}c > naive 95c (fee on No@Kalshi)")
+    a = comp.candidates[0]  # cheapest lock: Yes@DK(0.30) + No@Kalshi(0.65)
+    expected = effective_cost("dk_predictions", 0.30) + effective_cost("kalshi", 0.65)
+    assert a.lock_cost > 0.30 + 0.65                       # both fees added on top of raw prices
+    assert abs(a.lock_cost - expected) < 1e-9
+    print(f"  both_fees: lock {a.lock_cost*100:.2f}c > naive 95c (DK + Kalshi fees)")
+
+
+def test_dk_predictions_fee_tiers():
+    from src.arb.fees import dk_predictions_fee_per_contract as f
+    assert f(0.05) == 0.01 and f(0.19) == 0.01      # cheap -> 1c
+    assert f(0.20) == 0.02 and f(0.50) == 0.02 and f(0.96) == 0.02  # middle -> 2c
+    assert f(0.97) == 0.01 and f(0.99) == 0.01      # expensive -> 1c
+    print("  dk_fee_tiers: 1c at 1-19c / 97-99c, 2c at 20-96c")
 
 
 def test_only_shared_candidates():
@@ -150,6 +160,7 @@ if __name__ == "__main__":
     test_overlap_gate_rejects_subset()
     test_candidate_arb_flagged()
     test_no_arb()
-    test_kalshi_fee_applied()
+    test_both_fees_applied()
+    test_dk_predictions_fee_tiers()
     test_only_shared_candidates()
     print("\nAll futures tests passed.")

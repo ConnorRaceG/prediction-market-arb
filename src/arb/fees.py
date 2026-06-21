@@ -24,6 +24,20 @@ def kalshi_fee_per_contract(price: float) -> float:
     return KALSHI_FEE_RATE * price * (1 - price)
 
 
+def dk_predictions_fee_per_contract(price: float) -> float:
+    """
+    DraftKings Predictions fee per $1 contract bought at `price` (per side).
+
+    Unlike Kalshi's proportional fee, DK charges a FLAT per-contract amount tiered
+    by price (its published schedule, DK fee + exchange fee combined): 1c for cheap
+    or expensive contracts (1-19c or 97-99c), 2c for the 20-96c middle. Around 2c per
+    leg on most prices, which is enough to sink a thin lock. Re-verify at:
+    https://myaccount.draftkings.com/documents/fee-disclosure?product=predict
+    """
+    cents = round(price * 100)
+    return 0.01 if (cents <= 19 or cents >= 97) else 0.02
+
+
 def effective_cost(source: str, implied_prob: float) -> float:
     """
     Cost to lock in $1 of payout on an outcome, including fees.
@@ -33,5 +47,7 @@ def effective_cost(source: str, implied_prob: float) -> float:
     """
     if source == "kalshi":
         return implied_prob + kalshi_fee_per_contract(implied_prob)
-    # Sportsbook: vig is already in the price
+    if source == "dk_predictions":
+        return implied_prob + dk_predictions_fee_per_contract(implied_prob)
+    # Sportsbook / Polymarket: vig is already in the price
     return implied_prob
