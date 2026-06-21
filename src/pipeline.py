@@ -282,8 +282,10 @@ def run_dk_predictions_detection(
                     fm, dkm, km, confidence=lm.confidence, note=lm.note,
                     outcome_map=lm.outcome_map))
                 matched_ids.add(lm.dk_market_id)
-        except Exception:
-            pass  # fail soft — keep the deterministic results
+        except Exception as e:
+            # Fail soft (keep the deterministic results) but surface WHY, so a broken
+            # LLM step shows up in logs instead of silently matching nothing.
+            print(f"[futures] LLM matching skipped: {e}")
 
     comparisons.sort(key=lambda c: c.best_lock if c.best_lock is not None else 9)
     unmatched = [m.event_name for m in dk_markets if m.market_id not in matched_ids]
