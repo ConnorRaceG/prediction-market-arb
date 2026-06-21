@@ -51,5 +51,8 @@ Thumbs.db
 # Scrape artifacts (transient captured JSON)
 scripts/dk_capture/
 
+# Monitor run history / alert logs (local runtime data)
+data/
+
 # Claude Code local config
 .claude/
