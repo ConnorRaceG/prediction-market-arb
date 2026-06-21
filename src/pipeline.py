@@ -255,26 +255,30 @@ def run_dk_predictions_detection(
                    for mt in det_matches]
     matched_ids = {mt.dk_market_id for mt in det_matches}
 
-    # 2) LLM semantic title match for the leftover boards (binary / political / economic).
+    # 2) LLM semantic match for the leftover boards (binary / political / economic).
+    # Fetch the candidate pool in full (the LLM needs both venues' outcomes to align
+    # sides), then match + outcome-align in one call, and compare with that mapping.
     leftover = [m for m in dk_markets if m.market_id not in matched_ids]
     if use_llm and leftover and Settings.ANTHROPIC_API_KEY:
         try:
             from src.matching.llm_matcher import match_futures_llm
-            pool = _kalshi_pool(leftover, index)
-            pool_titles = dict(pool)
-            for lm in match_futures_llm(leftover, pool):
-                if lm.confidence < MIN_FUTURES_LLM_CONF or lm.dk_market_id in matched_ids:
+            pool_markets = []
+            for tk, title in _kalshi_pool(leftover, index):
+                km = k_by.get(tk) or kalshi.fetch_event_market(tk, title)
+                if km is not None:
+                    k_by[km.market_id] = km
+                    pool_markets.append(km)
+            for lm in match_futures_llm(leftover, pool_markets):
+                km = k_by.get(lm.kalshi_market_id)
+                if (lm.confidence < MIN_FUTURES_LLM_CONF or lm.dk_market_id in matched_ids
+                        or km is None):
                     continue
-                km = k_by.get(lm.kalshi_ticker) or kalshi.fetch_event_market(
-                    lm.kalshi_ticker, pool_titles.get(lm.kalshi_ticker, ""))
-                if km is None:
-                    continue
-                k_by[km.market_id] = km
                 dkm = dk_by[lm.dk_market_id]
                 fm = FuturesMatch(dkm.market_id, km.market_id, dkm.event_name,
                                   km.event_name, [], 0, 1.0, 1.0)
-                comparisons.append(compare_futures(fm, dkm, km,
-                                                   confidence=lm.confidence, note=lm.note))
+                comparisons.append(compare_futures(
+                    fm, dkm, km, confidence=lm.confidence, note=lm.note,
+                    outcome_map=lm.outcome_map))
                 matched_ids.add(lm.dk_market_id)
         except Exception:
             pass  # fail soft — keep the deterministic results

@@ -220,25 +220,27 @@ def match_polymarket_kalshi(poly_markets: list[Market],
     ]
 
 
-# --- DK Predictions <-> Kalshi futures (title-level semantic match) ---
+# --- DK Predictions <-> Kalshi futures (semantic match + outcome alignment) ---
 # The deterministic name-overlap matcher handles distinctive multi-candidate boards
 # (Person of the Year), but it can't match binary / generic-candidate boards (a Yes/No
 # recession market, a Republicans/Democrats Senate market) whose meaning lives in the
-# TITLE, not the candidates. This matcher reads titles and picks the same-question
-# Kalshi event. It takes Kalshi's cheap (ticker, title) index — not full markets — so
-# only the events it matches get fetched in full afterwards.
+# TITLE, not the candidates. This matcher reads both venues' full markets, picks the
+# same-question Kalshi market for each DK board, AND aligns every DK outcome to its
+# Kalshi equivalent — so the price comparison works even when the two venues name the
+# sides differently (DK 'Republicans' -> Kalshi 'Republican Party').
 
 _FUTURES_SYSTEM = (
     "You match prediction-market 'futures' boards across two venues: DraftKings "
-    "Predictions and Kalshi. Each DraftKings board is one question (e.g. 'US Recession "
-    "in 2026?'). For each board pick the SINGLE Kalshi event that resolves on the exact "
-    "same real-world question, so a position on one venue can be hedged on the other. "
-    "Differently-worded titles can be the same question ('US Recession in 2026?' is the "
-    "same as 'Recession this year?'); a different subject is NOT a match (a Texas Senate "
-    "race is not a Georgia Senate race; 2026 is not 2028; the US House is not the US "
-    "Senate). Return a Kalshi match only when you are confident it is the same "
-    "resolution; omit a board entirely when nothing lines up. Be conservative — a wrong "
-    "match loses real money."
+    "Predictions and Kalshi. Each board is one question with one or more candidate "
+    "outcomes. For each DraftKings board, find the SINGLE Kalshi market that resolves on "
+    "the exact same real-world question, and align every DraftKings outcome to its "
+    "economically-equivalent Kalshi outcome (e.g. DraftKings 'Republicans' -> Kalshi "
+    "'Republican Party'; 'Yes' -> 'Yes'). Differently-worded titles can be the same "
+    "question ('US Recession in 2026?' is the same as 'Recession this year?'); a "
+    "different subject is NOT a match (a Texas Senate race is not a Georgia Senate race; "
+    "2026 is not 2028; the US House is not the US Senate). Only return a match you are "
+    "confident shares the exact same resolution; omit a board entirely when nothing "
+    "lines up. Be conservative — a wrong match loses real money."
 )
 
 _FUTURES_SCHEMA = {
@@ -253,8 +255,21 @@ _FUTURES_SCHEMA = {
                     "kalshi_market_id": {"type": "string"},
                     "confidence": {"type": "number"},
                     "note": {"type": "string"},
+                    "outcome_map": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "dk_outcome": {"type": "string"},
+                                "kalshi_outcome": {"type": "string"},
+                            },
+                            "required": ["dk_outcome", "kalshi_outcome"],
+                            "additionalProperties": False,
+                        },
+                    },
                 },
-                "required": ["dk_market_id", "kalshi_market_id", "confidence", "note"],
+                "required": ["dk_market_id", "kalshi_market_id", "confidence", "note",
+                             "outcome_map"],
                 "additionalProperties": False,
             },
         }
@@ -267,36 +282,25 @@ _FUTURES_SCHEMA = {
 @dataclass
 class FuturesLLMMatch:
     dk_market_id: str
-    kalshi_ticker: str
+    kalshi_market_id: str
     confidence: float
     note: str
-
-
-def _describe_boards(markets: list[Market]) -> str:
-    blocks = []
-    for m in markets:
-        names = ", ".join(o.name for o in m.outcomes[:10])
-        blocks.append(f"[DK id={m.market_id}] {m.event_name!r} | candidates: {names}")
-    return "\n".join(blocks) if blocks else "(none)"
-
-
-def _describe_index(index: list[tuple[str, str]]) -> str:
-    return "\n".join(f"[K id={tk}] {title!r}" for tk, title in index) or "(none)"
+    outcome_map: dict[str, str]  # dk outcome name -> kalshi outcome name
 
 
 def match_futures_llm(dk_markets: list[Market],
-                      kalshi_index: list[tuple[str, str]]) -> list[FuturesLLMMatch]:
-    """Title-level semantic match of DK Predictions boards to Kalshi events."""
+                      kalshi_markets: list[Market]) -> list[FuturesLLMMatch]:
+    """Semantic match of DK Predictions boards to Kalshi markets, with outcome alignment."""
     if not Settings.ANTHROPIC_API_KEY:
         raise ValueError(
             "ANTHROPIC_API_KEY not set — add it to .env to use the futures LLM matcher."
         )
-    if not dk_markets or not kalshi_index:
+    if not dk_markets or not kalshi_markets:
         return []
 
     user = (
-        "DraftKings boards:\n" + _describe_boards(dk_markets)
-        + "\n\nKalshi events:\n" + _describe_index(kalshi_index)
+        "DraftKings boards:\n" + _describe(dk_markets, "DK")
+        + "\n\nKalshi markets:\n" + _describe(kalshi_markets, "K")
         + "\n\nReturn the matches."
     )
 
@@ -314,9 +318,10 @@ def match_futures_llm(dk_markets: list[Market],
     return [
         FuturesLLMMatch(
             dk_market_id=m["dk_market_id"],
-            kalshi_ticker=m["kalshi_market_id"],
+            kalshi_market_id=m["kalshi_market_id"],
             confidence=m["confidence"],
             note=m["note"],
+            outcome_map={p["dk_outcome"]: p["kalshi_outcome"] for p in m["outcome_map"]},
         )
         for m in data["matches"]
     ]

@@ -58,20 +58,32 @@ def _candidates(market: Market) -> dict[str, dict]:
 
 def compare_futures(match: "FuturesMatch", dk: Market, kalshi: Market,
                     min_margin_pct: float | None = None,
-                    confidence: float | None = None, note: str = "") -> FuturesComparison:
+                    confidence: float | None = None, note: str = "",
+                    outcome_map: dict[str, str] | None = None) -> FuturesComparison:
     """Build the per-candidate DK-vs-Kalshi comparison and flag binary arbs.
 
-    `confidence`/`note` are set for LLM (semantic-title) matches and left empty for
-    deterministic name-overlap matches.
+    Candidates are aligned across venues by `outcome_map` (DK name -> Kalshi name) when
+    given — that's how LLM matches line up sides the two venues name differently
+    ('Republicans' vs 'Republican Party'). Without a map (deterministic matches) sides
+    align by identical normalized name. `confidence`/`note` are set for LLM matches.
     """
     threshold = (Settings.MIN_ARB_MARGIN if min_margin_pct is None else min_margin_pct) / 100.0
     dk_c, k_c = _candidates(dk), _candidates(kalshi)
 
+    if outcome_map:
+        pairs = [(normalize_name(d), normalize_name(k)) for d, k in outcome_map.items()]
+    else:
+        pairs = [(key, key) for key in set(dk_c) & set(k_c)]
+
     rows: list[FuturesCandidate] = []
     n_arbs = 0
     best_lock = None
-    for key in set(dk_c) & set(k_c):
-        d, k = dk_c[key], k_c[key]
+    seen: set[str] = set()
+    for dk_key, k_key in pairs:
+        d, k = dk_c.get(dk_key), k_c.get(k_key)
+        if d is None or k is None or dk_key in seen:
+            continue
+        seen.add(dk_key)
         dk_yes, dk_no = d.get("yes"), d.get("no")
         k_yes, k_no = k.get("yes"), k.get("no")
 
