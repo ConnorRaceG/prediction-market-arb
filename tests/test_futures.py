@@ -70,14 +70,25 @@ def test_match_picks_correct_counterpart():
 
 
 def test_overlap_gate_rejects_phantom():
-    # Decade alone shares only 3 of the 8 POTY names -> overlap 0.375 < 0.5 -> no match,
-    # even though n_shared (3) clears min_shared. This is the phantom-match guard.
+    # Decade (10 names) shares only 3 with the 8 POTY names -> overlap 3/10 < 0.5 ->
+    # no match, even though n_shared (3) clears min_shared. The phantom-match guard.
     dk = _names_market("dk_predictions", "dkPOTY", "TIME's Person of the Year 2026?", POTY)
     decade = _names_market("kalshi", "KXDECADE", "Time's Person of the Decade", DECADE)
 
     matches = match_futures([dk], [decade])
     assert matches == []
-    print("  overlap_gate: weak 3/8 overlap rejected (no phantom Year<->Decade)")
+    print("  overlap_gate: weak 3/10 overlap rejected (no phantom Year<->Decade)")
+
+
+def test_overlap_gate_rejects_subset():
+    # The real bug: a TINY Kalshi board whose every name is inside the big DK board.
+    # shared/min would be 3/3 = 1.0 (false match -> false arb); shared/max = 3/8 = 0.375
+    # rejects it. Regression guard for the Person-of-the-Year vs Decade false arb.
+    dk = _names_market("dk_predictions", "dkPOTY", "Person of the Year", POTY)  # 8 names
+    subset = _names_market("kalshi", "KXSMALL", "Person of the Decade",
+                           ["Elon Musk", "Taylor Swift", "Sam Altman"])  # all 3 in POTY
+    assert match_futures([dk], [subset]) == []
+    print("  subset_gate: tiny contained subset board rejected (no false arb)")
 
 
 # ---- detector ----
@@ -136,6 +147,7 @@ if __name__ == "__main__":
     test_normalize_name()
     test_match_picks_correct_counterpart()
     test_overlap_gate_rejects_phantom()
+    test_overlap_gate_rejects_subset()
     test_candidate_arb_flagged()
     test_no_arb()
     test_kalshi_fee_applied()

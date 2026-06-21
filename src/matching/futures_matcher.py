@@ -22,7 +22,7 @@ class FuturesMatch:
     kalshi_event: str
     shared: list[str]   # candidate names present on both boards (DK spelling)
     n_shared: int
-    overlap: float      # |shared| / |smaller candidate set| (the match gate)
+    overlap: float      # |shared| / |larger candidate set| (the match gate)
     jaccard: float      # |shared| / |union of candidate names| (for reference)
 
 
@@ -43,12 +43,12 @@ def match_futures(dk_markets: list[Market], kalshi_markets: list[Market],
     Match each DK board to the Kalshi event it shares the most candidates with.
 
     A match needs BOTH at least `min_shared` shared candidate names AND an overlap
-    coefficient (shared / smaller candidate set) of at least `min_overlap`. The
-    overlap gate is what stops phantom matches between different markets that share
-    a few names: "Person of the Year" vs "Person of the Decade" overlap on Musk /
-    Swift / Altman, but only a small fraction of either board, so they're rejected.
-    A genuine same-market pair shares most of the smaller board. Each DK board takes
-    its single best Kalshi event.
+    coefficient (shared / LARGER candidate set) of at least `min_overlap`. Dividing by
+    the larger board is what stops phantom matches: "Person of the Year" (20 names) and
+    "Person of the Decade" (a few names, all also in Year) overlap on Musk / Swift /
+    Altman, but that's a small fraction of the 20-name board, so it's rejected. A genuine
+    same-market pair shares most of BOTH boards. Anything borderline falls through to the
+    LLM matcher. Each DK board takes its single best Kalshi event.
     """
     kalshi_named = [(m, _name_set(m)) for m in kalshi_markets]
     matches: list[FuturesMatch] = []
@@ -62,7 +62,7 @@ def match_futures(dk_markets: list[Market], kalshi_markets: list[Market],
             shared = dk_names & kn
             if len(shared) < 2:
                 continue
-            overlap = len(shared) / min(len(dk_names), len(kn))
+            overlap = len(shared) / max(len(dk_names), len(kn))
             jac = len(shared) / len(dk_names | kn)
             if best is None or len(shared) > len(best[1]) or (
                 len(shared) == len(best[1]) and overlap > best[2]):

@@ -234,11 +234,18 @@ def run_dk_predictions_detection(
     dk_by = {m.market_id: m for m in dk_markets}
 
     # 1) Deterministic: title pre-filter -> fetch full markets -> candidate-name overlap.
+    # Rank by how many title words a Kalshi event shares with some DK board, so the real
+    # counterpart (e.g. 'Person of the Year', 3 shared words) is fetched before weaker
+    # 2-word matches get to the cap.
     dk_tokens = [_title_tokens(d.event_name) for d in dk_markets]
-    chosen = [(tk, title) for tk, title in index
-              if any(len(_title_tokens(title) & dt) >= 2 for dt in dk_tokens)]
+
+    def _relevance(title: str) -> int:
+        return max((len(_title_tokens(title) & dt) for dt in dk_tokens), default=0)
+
+    chosen = sorted(((r, tk, title) for tk, title in index if (r := _relevance(title)) >= 2),
+                    reverse=True)
     k_by = {}
-    for tk, title in chosen[:max_kalshi_fetch]:
+    for _, tk, title in chosen[:max_kalshi_fetch]:
         m = kalshi.fetch_event_market(tk, title)
         if m is not None:
             k_by[m.market_id] = m
