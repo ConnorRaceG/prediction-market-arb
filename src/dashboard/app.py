@@ -320,7 +320,9 @@ def scan(sport_labels, bankroll, include_novelty, include_poly, include_futures)
     if include_futures:
         progress.progress(done / steps, text="Scanning DK Predictions futures × Kalshi (slow)...")
         try:
-            fr = run_dk_predictions_detection(headless=True)
+            # Lighter than the full once-a-day monitor scan so an interactive refresh
+            # stays quicker and makes fewer requests (less likely to trip DK throttling).
+            fr = run_dk_predictions_detection(headless=True, max_groups_per_cat=8)
             if fr.n_dk == 0:
                 # No exception, but the scrape came back empty — almost always DK
                 # throttling the browser after repeated runs (it tolerates ~once a day).
