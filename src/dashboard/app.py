@@ -296,25 +296,52 @@ def scan(sport_labels, bankroll, include_novelty, include_poly, include_futures)
 
     if include_novelty:
         progress.progress(done / steps, text="Scanning novelty (DraftKings × Kalshi)...")
+        live = None
         try:
             nr = run_novelty_detection(bankroll=bankroll, headless=True)
-            cards.extend(from_novelty(r) for r in nr.results)
-            n_matched += nr.n_matched
-            n_arbs += len(nr.arbs)
-        except Exception as e:  # scrape blocked, no API key, etc. — keep the page alive
-            warnings.append(f"Novelty scan failed: {e}")
+            live = [from_novelty(r) for r in nr.results]
+        except Exception:
+            live = None  # fall back to the cached last-good scan below
+        if live is not None:
+            cache.save_cards("novelty", live)
+            cards.extend(live)
+            n_matched += len(live)
+            n_arbs += sum(1 for c in live if c.is_arb)
+        else:
+            cached, ts = cache.load_cards("novelty")
+            if cached:
+                cards.extend(cached)
+                n_matched += len(cached)
+                n_arbs += sum(1 for c in cached if c.is_arb)
+                warnings.append(
+                    "Novelty live scan unavailable — showing the last successful scan "
+                    f"from {cache.humanize_age(ts)}.")
+            # nothing live and nothing cached -> contribute nothing, no banner
         done += 1
         progress.progress(done / steps)
 
     if include_poly:
         progress.progress(done / steps, text="Scanning Polymarket × Kalshi...")
+        live = None
         try:
             pmr = run_polymarket_detection(bankroll=bankroll)
-            cards.extend(from_polymarket(r) for r in pmr.results)
-            n_matched += pmr.n_matched
-            n_arbs += len(pmr.arbs)
-        except Exception as e:
-            warnings.append(f"Polymarket scan failed: {e}")
+            live = [from_polymarket(r) for r in pmr.results]
+        except Exception:
+            live = None
+        if live is not None:
+            cache.save_cards("polymarket", live)
+            cards.extend(live)
+            n_matched += len(live)
+            n_arbs += sum(1 for c in live if c.is_arb)
+        else:
+            cached, ts = cache.load_cards("polymarket")
+            if cached:
+                cards.extend(cached)
+                n_matched += len(cached)
+                n_arbs += sum(1 for c in cached if c.is_arb)
+                warnings.append(
+                    "Polymarket live scan unavailable — showing the last successful scan "
+                    f"from {cache.humanize_age(ts)}.")
         done += 1
         progress.progress(done / steps)
 
