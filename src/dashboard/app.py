@@ -429,6 +429,7 @@ def main():
     if refresh or "scan" not in st.session_state:
         st.session_state.scan = scan(sport_labels, bankroll,
                                      include_novelty, include_poly, include_futures)
+        st.session_state.hide_notices = False  # new scan -> show its notices again
     data = st.session_state.scan
 
     c1, c2, c3, c4 = st.columns(4)
@@ -437,8 +438,15 @@ def main():
     c3.metric("Odds API quota", data["quota"] or "—")
     c4.metric("Last refresh", time.strftime("%H:%M:%S", time.localtime(data["ts"])))
 
-    for w in data.get("warnings", []):
-        st.warning(f"⚠️ {w}")
+    # Notices are dismissible (handy for a clean screenshot). Dismissing reruns but
+    # reuses the cached scan, so it never re-scrapes; a fresh Refresh shows them again.
+    notices = data.get("warnings", [])
+    if notices and not st.session_state.get("hide_notices", False):
+        for w in notices:
+            st.warning(f"⚠️ {w}")
+        if st.button("✕ Dismiss notices"):
+            st.session_state.hide_notices = True
+            st.rerun()
 
     if data["n_arbs"]:
         st.success(f"💰 {data['n_arbs']} live arbitrage opportunity(ies) — green cards below, with stakes.")
