@@ -22,6 +22,7 @@ from src.pipeline import (
 from src.dashboard.cards import (
     from_sports, from_novelty, from_polymarket, from_futures,
 )
+from src.dashboard import cache
 from config.settings import Settings
 
 # Display label -> canonical sport key (same keys The Odds API uses)
@@ -319,25 +320,37 @@ def scan(sport_labels, bankroll, include_novelty, include_poly, include_futures)
 
     if include_futures:
         progress.progress(done / steps, text="Scanning DK Predictions futures × Kalshi (slow)...")
+        # Lighter than the full once-a-day monitor scan so an interactive refresh stays
+        # quicker and makes fewer requests (less likely to trip DK throttling).
+        live = None
         try:
-            # Lighter than the full once-a-day monitor scan so an interactive refresh
-            # stays quicker and makes fewer requests (less likely to trip DK throttling).
             fr = run_dk_predictions_detection(headless=True, max_groups_per_cat=8)
-            if fr.n_dk == 0:
-                # No exception, but the scrape came back empty — almost always DK
-                # throttling the browser after repeated runs (it tolerates ~once a day).
-                warnings.append(
-                    "DK Predictions returned 0 boards — DraftKings likely throttled the "
-                    "scrape (it tolerates about one run a day). Try again later.")
-            else:
-                cards.extend(from_futures(c) for c in fr.comparisons)
-                n_matched += fr.n_matched
-                n_arbs += sum(c.n_arbs for c in fr.comparisons)
+            if fr.n_dk > 0:
+                live = [from_futures(c) for c in fr.comparisons]
         except Exception as e:
             warnings.append(
-                "DK Predictions scan failed (browser scrape) — usually a timeout or "
-                "DraftKings throttling repeated scrapes. Try again later or rely on the "
-                f"daily monitor. Detail: {type(e).__name__}: {e}")
+                "DK Predictions live scan failed (browser scrape) — usually a timeout or "
+                f"DraftKings throttling repeated scrapes. Detail: {type(e).__name__}: {e}")
+        if live is not None:
+            cache.save_cards("futures", live)            # remember this good scan
+            cards.extend(live)
+            n_matched += len(live)
+            n_arbs += sum(1 for c in live if c.is_arb)
+        else:
+            # Live scrape failed or came back empty (DK throttling) — show the last good
+            # scan from disk instead of nothing, with a note on how old it is.
+            cached, ts = cache.load_cards("futures")
+            if cached:
+                cards.extend(cached)
+                n_matched += len(cached)
+                n_arbs += sum(1 for c in cached if c.is_arb)
+                warnings.append(
+                    "DK Predictions live scan unavailable (DraftKings throttling) — "
+                    f"showing the last successful scan from {cache.humanize_age(ts)}.")
+            else:
+                warnings.append(
+                    "DK Predictions returned no data and there is no cached scan yet — "
+                    "run scripts/monitor_futures.py once to populate it.")
         done += 1
         progress.progress(done / steps)
 

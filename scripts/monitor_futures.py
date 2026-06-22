@@ -77,6 +77,16 @@ def scan_once() -> int:
     with open(HISTORY, "a", encoding="utf-8") as f:
         f.write(json.dumps(_record(ts, pr)) + "\n")
 
+    # Feed the dashboard's cache so it can show this scan even when a live refresh is
+    # throttled (the monitor maintains the memory; the dashboard just displays it).
+    if pr.n_dk > 0:
+        try:
+            from src.dashboard.cards import from_futures
+            from src.dashboard import cache
+            cache.save_cards("futures", [from_futures(c) for c in pr.comparisons])
+        except Exception:
+            pass
+
     arbs = pr.arbs
     print(f"[{ts}] {pr.n_dk} boards, {pr.n_matched} matched, {len(arbs)} with an arb.")
 
