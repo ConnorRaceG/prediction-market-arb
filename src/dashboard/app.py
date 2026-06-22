@@ -50,6 +50,8 @@ CSS = """
 .intel { display:inline-block; font-size:0.62rem; font-weight:700; letter-spacing:0.04em;
          text-transform:uppercase; color:#f59e0b; border:1px solid rgba(245,158,11,0.45);
          border-radius:5px; padding:0 5px; margin-top:6px; }
+.livewarn { font-size:0.72rem; color:#f59e0b; background:rgba(245,158,11,0.12);
+            border:1px solid rgba(245,158,11,0.4); border-radius:6px; padding:5px 8px; margin-top:8px; }
 .edge-pill { font-weight:700; font-size:0.92rem; padding:2px 10px; border-radius:999px; color:#fff; }
 .edge-pill.arb { background:#16a34a; } .edge-pill.close { background:#f59e0b; } .edge-pill.none { background:#64748b; }
 .meter { position:relative; height:8px; border-radius:999px; background:rgba(128,128,128,0.18); margin:11px 0 13px; }
@@ -243,6 +245,15 @@ def render_card(view):
         f"<div class='ribbon'>✅ Lock ${view.profit:.2f} on ${view.staked:.0f} staked "
         f"({view.roi:+.1%})</div>" if view.is_arb else ""
     )
+    # A live game's book odds move every play, so different books lag each other and a
+    # small "arb" is usually a stale-line artifact that's gone before you can place both
+    # legs. Flag it loudly rather than presenting it like a stable pre-game edge.
+    live = view.start_time is not None and 0 <= (time.time() - view.start_time) < 4 * 3600
+    live_warn = (
+        "<div class='livewarn'>⚠ live game — odds move every play; this edge is likely "
+        "a stale-line artifact. Verify both legs before betting.</div>"
+        if (live and view.is_arb) else ""
+    )
     subtitle = f"<div class='sub'>{view.subtitle}</div>" if view.subtitle else ""
     flag = "<div><span class='intel'>detection only</span></div>" if view.detection_only else ""
     when = (f"<div class='when'>🗓 {_fmt_time(view.start_time)} · {_relative(view.start_time)}</div>"
@@ -255,7 +266,7 @@ def render_card(view):
         f"{subtitle}{flag}{when}"
         f"<div class='meter'><div class='meter-zero'></div>"
         f"<div class='meter-fill {status}' style='left:{left:.1f}%; width:{width:.1f}%'></div></div>"
-        f"<div class='legs'>{legs_html}</div>{ribbon}{_details(view)}</div>"
+        f"<div class='legs'>{legs_html}</div>{ribbon}{live_warn}{_details(view)}</div>"
     )
 
 
@@ -310,11 +321,21 @@ def scan(sport_labels, bankroll, include_novelty, include_poly, include_futures)
         progress.progress(done / steps, text="Scanning DK Predictions futures × Kalshi (slow)...")
         try:
             fr = run_dk_predictions_detection(headless=True)
-            cards.extend(from_futures(c) for c in fr.comparisons)
-            n_matched += fr.n_matched
-            n_arbs += sum(c.n_arbs for c in fr.comparisons)
+            if fr.n_dk == 0:
+                # No exception, but the scrape came back empty — almost always DK
+                # throttling the browser after repeated runs (it tolerates ~once a day).
+                warnings.append(
+                    "DK Predictions returned 0 boards — DraftKings likely throttled the "
+                    "scrape (it tolerates about one run a day). Try again later.")
+            else:
+                cards.extend(from_futures(c) for c in fr.comparisons)
+                n_matched += fr.n_matched
+                n_arbs += sum(c.n_arbs for c in fr.comparisons)
         except Exception as e:
-            warnings.append(f"DK Predictions scan failed: {e}")
+            warnings.append(
+                "DK Predictions scan failed (browser scrape) — usually a timeout or "
+                "DraftKings throttling repeated scrapes. Try again later or rely on the "
+                f"daily monitor. Detail: {type(e).__name__}: {e}")
         done += 1
         progress.progress(done / steps)
 
