@@ -142,6 +142,42 @@ def test_dk_predictions_fee_tiers():
     print("  dk_fee_tiers: 1c at 1-19c / 97-99c, 2c at 20-96c")
 
 
+def test_threshold_buckets_not_crossed():
+    # The real Fed false arb: DK 'Hike >25bps' (5c) got compared against Kalshi
+    # 'Hike 25bps' (16c) -> phantom 8% lock. They are DIFFERENT outcomes (a >25bps
+    # hike vs a 25bps hike), so the row must be dropped, even when the LLM's outcome_map
+    # explicitly crosses them. Real numbers off the July 2026 Fed boards.
+    dk = _cand_market("dk_predictions", "dk", "Fed Decision in Jul 2026",
+                      [("Hike >25bps", 0.05, 0.95), ("0bps (Unchanged)", 0.85, 0.16),
+                       ("Cut >25bps", 0.06, 0.95)])
+    kalshi = _cand_market("kalshi", "k", "Fed decision in Jul 2026",
+                          [("Hike >25bps", 0.01, None), ("Hike 25bps", 0.16, 0.86),
+                           ("Fed maintains rate", 0.85, 0.16), ("Cut 25bps", 0.02, 0.99)])
+    bad_map = {"Hike >25bps": "Hike 25bps",            # the off-by-one-bucket mismatch
+               "0bps (Unchanged)": "Fed maintains rate",
+               "Cut >25bps": "Cut 25bps"}
+    comp = compare_futures(_match("dk", "k"), dk, kalshi, outcome_map=bad_map)
+
+    names = {c.name for c in comp.candidates}
+    assert comp.n_arbs == 0                         # phantom hike arb is gone
+    assert "Hike >25bps" not in names               # mismatched-threshold row dropped
+    assert "0bps (Unchanged)" in names              # the clean same-bucket row survives
+    print("  threshold_guard: '>25bps' vs '25bps' refused (no phantom Fed arb)")
+
+
+def test_threshold_buckets_same_bucket_compares():
+    # The flip side: identical thresholds ('>25bps' vs '>25bps') must still compare,
+    # so a genuine same-outcome price gap isn't thrown away with the phantom.
+    dk = _cand_market("dk_predictions", "dk", "Fed", [("Hike >25bps", 0.05, 0.95)])
+    kalshi = _cand_market("kalshi", "k", "Fed", [("Hike >25bps", 0.01, 0.98)])
+    comp = compare_futures(_match("dk", "k"), dk, kalshi,
+                           outcome_map={"Hike >25bps": "Hike >25bps"})
+    assert len(comp.candidates) == 1
+    row = comp.candidates[0]
+    assert row.dk_yes == 0.05 and row.kalshi_yes == 0.01   # aligned to the right bucket
+    print("  threshold_same: '>25bps' vs '>25bps' compared on the correct prices")
+
+
 def test_only_shared_candidates():
     # Candidates present on just one venue are dropped; only the intersection is compared.
     dk = _cand_market("dk_predictions", "dk", "E", [("A", 0.30, 0.70), ("DK Only", 0.20, 0.80)])
@@ -162,5 +198,7 @@ if __name__ == "__main__":
     test_no_arb()
     test_both_fees_applied()
     test_dk_predictions_fee_tiers()
+    test_threshold_buckets_not_crossed()
+    test_threshold_buckets_same_bucket_compares()
     test_only_shared_candidates()
     print("\nAll futures tests passed.")

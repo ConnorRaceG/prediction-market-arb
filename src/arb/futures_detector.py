@@ -15,6 +15,7 @@ board even when there's no edge), with the profitable candidates flagged. Detect
 only — the Kalshi leg is API-executable, the DK leg is placed manually.
 """
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,41 @@ from config.settings import Settings
 
 if TYPE_CHECKING:
     from src.matching.futures_matcher import FuturesMatch
+
+
+# Comparison phrasing -> operator. normalize_name() throws away >, <, = etc., which is
+# fine for board titles but disastrous for candidate alignment: 'Hike >25bps' and
+# 'Hike 25bps' would flatten to the same key and silently get paired as the same
+# outcome (they are not). Longer tokens first so '>=' wins over '>'.
+_CMP = [(">=", ">="), ("<=", "<="), (">", ">"), ("<", "<"),
+        ("at least", ">="), ("or more", ">="), ("more than", ">"), ("over", ">"),
+        ("at most", "<="), ("or less", "<="), ("less than", "<"), ("under", "<")]
+
+
+def _threshold_sig(name: str) -> tuple[str, str] | None:
+    """(operator, number) if a candidate name carries a numeric threshold, else None.
+
+    'Hike >25bps' -> ('>', '25'); 'Hike 25bps' -> ('=', '25'); 'Cut 25bps' -> ('=','25').
+    Used to keep bucketed outcomes distinct that normalize_name would otherwise merge.
+    """
+    raw = (name or "").lower()
+    num = re.search(r"\d+(?:\.\d+)?", raw)
+    if not num:
+        return None
+    op = "="
+    for token, sym in _CMP:
+        if token in raw:
+            op = sym
+            break
+    return (op, num.group())
+
+
+def _candidate_key(name: str) -> str:
+    """Normalized alignment key that preserves a threshold operator, so '>25bps',
+    '<=25bps' and '25bps' map to different keys instead of colliding."""
+    sig = _threshold_sig(name)
+    base = normalize_name(name)
+    return f"{base}|{sig[0]}" if sig and sig[0] != "=" else base
 
 
 @dataclass
@@ -52,7 +88,7 @@ class FuturesComparison:
 
 
 def _candidates(market: Market) -> dict[str, dict]:
-    return {normalize_name(c["name"]): c
+    return {_candidate_key(c["name"]): c
             for c in (market.raw_data or {}).get("candidates", [])}
 
 
@@ -71,7 +107,7 @@ def compare_futures(match: "FuturesMatch", dk: Market, kalshi: Market,
     dk_c, k_c = _candidates(dk), _candidates(kalshi)
 
     if outcome_map:
-        pairs = [(normalize_name(d), normalize_name(k)) for d, k in outcome_map.items()]
+        pairs = [(_candidate_key(d), _candidate_key(k)) for d, k in outcome_map.items()]
     else:
         pairs = [(key, key) for key in set(dk_c) & set(k_c)]
 
@@ -82,6 +118,12 @@ def compare_futures(match: "FuturesMatch", dk: Market, kalshi: Market,
     for dk_key, k_key in pairs:
         d, k = dk_c.get(dk_key), k_c.get(k_key)
         if d is None or k is None or dk_key in seen:
+            continue
+        # Refuse to pair different threshold buckets even if the LLM's map says to:
+        # 'Hike >25bps' (DK) vs 'Hike 25bps' (Kalshi) are different outcomes, and
+        # comparing their prices manufactures a phantom arb. Drop the row instead.
+        ds, ks = _threshold_sig(d["name"]), _threshold_sig(k["name"])
+        if ds and ks and ds != ks:
             continue
         seen.add(dk_key)
         dk_yes, dk_no = d.get("yes"), d.get("no")
