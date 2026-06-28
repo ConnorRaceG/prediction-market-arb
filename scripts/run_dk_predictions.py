@@ -25,10 +25,14 @@ def _c(p):
 def main():
     Settings.validate()
     print("Scanning DK Predictions (a browser window opens) + Kalshi...\n")
-    pr = run_dk_predictions_detection(headless=False)
+    pr = run_dk_predictions_detection(headless=False, verbose=True)
 
-    print(f"DK boards: {pr.n_dk} | Kalshi events fetched: {pr.n_kalshi} | "
-          f"matched boards: {pr.n_matched} | boards with an arb: {len(pr.arbs)}\n")
+    print(f"DK boards discovered: {pr.n_discovered} | priced: {pr.n_dk} | "
+          f"Kalshi events fetched: {pr.n_kalshi} | matched: {pr.n_matched} | "
+          f"with an arb: {len(pr.arbs)}\n")
+    if pr.new_boards:
+        print(f"New boards this scan ({len(pr.new_boards)}): "
+              f"{', '.join(pr.new_boards)}\n")
 
     for comp in pr.comparisons:
         bl = f"{comp.best_lock * 100:.0f}c" if comp.best_lock is not None else "-"

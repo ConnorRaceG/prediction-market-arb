@@ -3,7 +3,7 @@ Main pipeline: fetch → match → detect arbs.
 """
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from src.adapters.kalshi import KalshiAdapter
@@ -188,11 +188,13 @@ def _kalshi_pool(dk_markets, index, per_board: int = 15) -> list[tuple[str, str]
 @dataclass
 class DKPredictionsPipelineResult:
     comparisons: list["FuturesComparison"]  # one per matched board, cheapest lock first
-    unmatched: list[str]                    # DK board titles with no Kalshi counterpart
-    n_dk: int
+    unmatched: list[str]                    # priced DK boards with no Kalshi counterpart
+    n_dk: int                               # boards actually priced this scan
     n_kalshi: int
     n_matched: int
     timestamp: float
+    n_discovered: int = 0                   # boards seen on the category pages (cheap)
+    new_boards: list[str] = field(default_factory=list)  # titles of boards new this scan
 
     @property
     def arbs(self) -> list["FuturesComparison"]:
@@ -201,18 +203,27 @@ class DKPredictionsPipelineResult:
 
 def run_dk_predictions_detection(
     categories=("culture", "politics", "economics", "business"),
-    max_groups_per_cat: int = 15,
+    price_budget: int = 12,
+    max_per_cat: int = 40,
     headless: bool = False,
+    profile_dir: str | None = None,
     kalshi_categories=("Entertainment", "Politics", "Economics", "Financials",
                        "Elections", "Companies"),
     max_kalshi_fetch: int = 40,
     use_llm: bool = True,
+    verbose: bool = False,
 ) -> DKPredictionsPipelineResult:
     """
     DK Predictions <-> Kalshi futures scan (detection only).
 
-    Scrape DK Predictions boards (prices read from DK's own API, not the screen) and
-    match them to Kalshi two ways:
+    Discovery is cheap and total; pricing is expensive and budgeted. We list every open
+    DK board (one load per category), keep an "open mind" by always seeing what's new,
+    then spend a pricing budget on the boards most likely to surface an arb: newly-opened
+    boards and boards whose title matches a Kalshi market, with a slow rotation through
+    the rest so nothing is ignored forever. Only the budgeted boards get loaded/priced,
+    which keeps the request footprint under DraftKings' throttle.
+
+    The priced boards are matched to Kalshi two ways:
       1. deterministic candidate-name overlap, for distinctive multi-candidate boards
          (Person of the Year);
       2. for whatever is left, an LLM semantic title match, for the binary / political
@@ -227,12 +238,38 @@ def run_dk_predictions_detection(
     from src.adapters.dk_predictions import DKPredictionsAdapter
     from src.matching.futures_matcher import match_futures, FuturesMatch
     from src.arb.futures_detector import compare_futures
+    from src import dk_state
 
-    dk_markets = DKPredictionsAdapter(headless=headless).fetch_markets(
-        categories=categories, max_groups_per_cat=max_groups_per_cat)
-
+    adapter = DKPredictionsAdapter(headless=headless, profile_dir=profile_dir,
+                                   verbose=verbose)
     kalshi = KalshiAdapter()
+
+    # 1) Discover the whole catalog (cheap), and the Kalshi index for the title pre-match.
+    specs = adapter.discover(categories=categories, max_per_cat=max_per_cat)
     index = kalshi.fetch_event_index(kalshi_categories)
+
+    # 2) Cheap pre-match: a board is worth pricing if some Kalshi event shares >=2
+    #    distinctive title words. We only know the board's approximate (card) title here;
+    #    the real one is read when priced, so this is a hint for prioritization, not a gate.
+    index_tokens = [_title_tokens(title) for _, title in index]
+
+    def _matchable(spec) -> bool:
+        st = _title_tokens(spec.title)
+        return bool(st) and any(len(st & it) >= 2 for it in index_tokens)
+
+    matchable = {s.ticker for s in specs if _matchable(s)}
+
+    # 3) Prioritize (new + matchable first, slow rotation for the rest) and price the budget.
+    state = dk_state.load_state()
+    new = dk_state.new_tickers(specs, state)
+    to_price = dk_state.prioritize(specs, matchable, state, price_budget)
+    if verbose:
+        print(f"[futures] {len(specs)} discovered, {len(matchable)} Kalshi-matchable, "
+              f"{len(new)} new; pricing {len(to_price)} (budget {price_budget})", flush=True)
+    dk_markets = adapter.price_boards(to_price)
+    dk_state.record(state, specs, [m.market_id for m in dk_markets])
+    dk_state.save_state(state)
+
     dk_by = {m.market_id: m for m in dk_markets}
 
     # 1) Deterministic: title pre-filter -> fetch full markets -> candidate-name overlap.
@@ -290,6 +327,11 @@ def run_dk_predictions_detection(
     comparisons.sort(key=lambda c: c.best_lock if c.best_lock is not None else 9)
     unmatched = [m.event_name for m in dk_markets if m.market_id not in matched_ids]
 
+    # Newly-appeared boards, named by their real title where we priced them (the card
+    # title from discovery is only approximate), else the discovery title.
+    new_boards = [(dk_by[s.ticker].event_name if s.ticker in dk_by else s.title)
+                  for s in specs if s.ticker in new]
+
     return DKPredictionsPipelineResult(
         comparisons=comparisons,
         unmatched=unmatched,
@@ -297,6 +339,8 @@ def run_dk_predictions_detection(
         n_kalshi=len(k_by),
         n_matched=len(matched_ids),
         timestamp=time.time(),
+        n_discovered=len(specs),
+        new_boards=new_boards,
     )
 
 

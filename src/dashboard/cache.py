@@ -55,6 +55,22 @@ def _from_dict(d: dict) -> CardView:
     return CardView(**d)
 
 
+def cooldown_state(ts, cooldown_secs: float, force: bool = False, now=None):
+    """Decide whether a DK-scraped track is still on cooldown.
+
+    The cache timestamp doubles as the shared "last time anyone hit DraftKings" clock,
+    so a recent monitor run counts too. Returns (on_cooldown, seconds_remaining); forcing
+    or having no prior scan means not on cooldown (a live pull is allowed).
+    """
+    if force or ts is None:
+        return False, 0.0
+    now = now if now is not None else time.time()
+    age = now - ts
+    if age >= cooldown_secs:
+        return False, 0.0
+    return True, cooldown_secs - age
+
+
 def humanize_age(ts) -> str:
     if not ts:
         return "unknown time"

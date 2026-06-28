@@ -29,15 +29,24 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(_ROOT, "data")
 HISTORY = os.path.join(DATA_DIR, "monitor_history.jsonl")
 ALERTS = os.path.join(DATA_DIR, "arbs_found.log")
+# Same warm browser profile the dashboard uses, so both share Akamai's trust cookies
+# (whichever runs while the other holds it falls back to an ephemeral context).
+DK_PROFILE = os.path.join(DATA_DIR, "dk_profile")
+
+# The scheduled monitor can afford a deeper sweep than an interactive dashboard pull,
+# so it prices a bigger budget of the prioritized boards each run.
+PRICE_BUDGET = 18
 
 
 def _record(ts: str, pr) -> dict:
     """One history row: counts + every matched board's best lock (for trend-watching)."""
     return {
         "ts": ts,
+        "n_discovered": pr.n_discovered,
         "n_dk": pr.n_dk,
         "n_matched": pr.n_matched,
         "n_arbs": len(pr.arbs),
+        "new_boards": pr.new_boards,
         "boards": [
             {"dk": c.dk_event, "kalshi": c.kalshi_event, "best_lock": c.best_lock,
              "n_arbs": c.n_arbs, "confidence": c.confidence}
@@ -66,14 +75,15 @@ def _windows_alert(title: str, message: str) -> None:
         pass
 
 
-def scan_once() -> int:
+def scan_once(budget: int = PRICE_BUDGET) -> int:
     """Run one scan, log it, alert on any arb. Returns the number of boards with an arb."""
     os.makedirs(DATA_DIR, exist_ok=True)
     Settings.validate()
     ts = datetime.now().isoformat(timespec="seconds")
     print(f"[{ts}] scanning DK Predictions x Kalshi futures...")
 
-    pr = run_dk_predictions_detection(headless=True)
+    pr = run_dk_predictions_detection(
+        headless=True, profile_dir=DK_PROFILE, price_budget=budget, verbose=True)
     with open(HISTORY, "a", encoding="utf-8") as f:
         f.write(json.dumps(_record(ts, pr)) + "\n")
 
@@ -88,7 +98,10 @@ def scan_once() -> int:
             pass
 
     arbs = pr.arbs
-    print(f"[{ts}] {pr.n_dk} boards, {pr.n_matched} matched, {len(arbs)} with an arb.")
+    print(f"[{ts}] {pr.n_discovered} boards discovered, {pr.n_dk} priced, "
+          f"{pr.n_matched} matched, {len(arbs)} with an arb.")
+    if pr.new_boards:
+        print(f"[{ts}] new boards this scan: {', '.join(pr.new_boards)}")
 
     if arbs:
         banner = _arb_banner(ts, arbs)
@@ -104,18 +117,24 @@ def scan_once() -> int:
 
 
 def main():
-    args = sys.argv[1:]
-    if args and args[0] == "--loop":
-        hours = float(args[1]) if len(args) > 1 else 24.0
-        print(f"monitor loop: scanning every {hours}h (Ctrl+C to stop)")
+    import argparse
+    ap = argparse.ArgumentParser(description="DK Predictions x Kalshi futures monitor")
+    ap.add_argument("--loop", type=float, metavar="HOURS", nargs="?", const=24.0,
+                    default=None, help="scan every HOURS hours (default 24) instead of once")
+    ap.add_argument("--budget", type=int, default=PRICE_BUDGET,
+                    help=f"boards to price per scan (default {PRICE_BUDGET}); "
+                         "the dashboard triggers a lighter run")
+    a = ap.parse_args()
+    if a.loop is not None:
+        print(f"monitor loop: scanning every {a.loop}h (Ctrl+C to stop)")
         while True:
             try:
-                scan_once()
+                scan_once(a.budget)
             except Exception as e:
                 print(f"scan failed: {e}")
-            time.sleep(hours * 3600)
+            time.sleep(a.loop * 3600)
     else:
-        scan_once()
+        scan_once(a.budget)
 
 
 if __name__ == "__main__":

@@ -4,26 +4,59 @@ Streamlit dashboard for arb detection.
 Run with:  streamlit run src/dashboard/app.py
 
 Shows the detection tracks in one edge-sorted grid: the deterministic sports
-track (Kalshi vs US sportsbooks) always on, plus optional LLM-matched novelty
-(DraftKings) and Polymarket tracks and the deterministic DK Predictions futures
-track. Each track keeps its own pipeline; they're unified only as cards here
+track (Kalshi vs US sportsbooks) always on, plus an optional LLM-matched
+Polymarket track and the DK Predictions futures track. The futures track is read
+from the cache the monitor writes — the dashboard can't scrape DraftKings itself
+inside Streamlit, so "Update DK data" drives the monitor in a separate process.
+Each track keeps its own pipeline; they're unified only as cards here
 (see src/dashboard/cards.py).
 """
 
+import os
+import sys
 import time
+import subprocess
 import streamlit as st
 
 from src.pipeline import (
     run_arb_detection,
-    run_novelty_detection,
     run_polymarket_detection,
-    run_dk_predictions_detection,
 )
 from src.dashboard.cards import (
-    from_sports, from_novelty, from_polymarket, from_futures,
+    from_sports, from_polymarket,
 )
 from src.dashboard import cache
-from config.settings import Settings
+from config.settings import Settings, project_root
+
+# The dashboard never scrapes DraftKings itself (Streamlit runs in a worker thread and
+# Playwright can't launch a browser there on Windows). DK data is produced by the monitor
+# in a separate process; the dashboard reads the cache it writes, and the "Update DK data"
+# button shells out to that monitor. This window throttles how often that button will
+# actually re-scrape, so repeated clicks can't hammer DraftKings. The cache timestamp is
+# the shared "last DK pull" clock, so a recent scheduled monitor run counts too.
+DK_COOLDOWN_SECS = 2.5 * 3600
+
+# The scraper the "Update DK data" button runs (out-of-process). Lighter budget than the
+# scheduled monitor so an interactive update finishes in ~2 minutes.
+MONITOR_SCRIPT = os.path.join(project_root, "scripts", "monitor_futures.py")
+UPDATE_BUDGET = 8
+
+
+def _run_monitor(budget: int = UPDATE_BUDGET):
+    """Run the futures monitor in its own process (where Playwright works), wait for it
+    to write the cache, and return (ok, message). This is how the dashboard gets fresh
+    DK data without launching a browser inside Streamlit."""
+    cmd = [sys.executable, MONITOR_SCRIPT, "--budget", str(budget)]
+    try:
+        r = subprocess.run(cmd, cwd=str(project_root), capture_output=True,
+                           text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return False, "scraper timed out after 10 minutes"
+    if r.returncode != 0:
+        return False, (r.stderr or r.stdout or "unknown error").strip()[-400:]
+    # Surface the scan's own summary line(s) on success.
+    tail = [ln for ln in (r.stdout or "").splitlines() if "priced" in ln or "discovered" in ln]
+    return True, (tail[-1] if tail else "done")
 
 # Display label -> canonical sport key (same keys The Odds API uses)
 SPORTS = {
@@ -271,17 +304,27 @@ def render_card(view):
     )
 
 
-def scan(sport_labels, bankroll, include_novelty, include_poly, include_futures):
+def _humanize_secs(secs: float) -> str:
+    secs = max(0, int(secs))
+    if secs < 90:
+        return "under a minute"
+    if secs < 3600:
+        return f"{secs // 60} min"
+    h, m = divmod(secs // 60, 60)
+    return f"{h}h {m:02d}m" if m else f"{h}h"
+
+
+def scan(sport_labels, bankroll, include_poly, include_futures):
     """Run every enabled track and return their cards in one edge-sorted list.
 
-    The sports track is cheap (HTTP only). The novelty/Polymarket tracks scrape or
-    call Claude; the DK Predictions futures track scrapes several DK boards (slow but
-    deterministic, no API key). The optional tracks run only when ticked, and a
-    failure in any one degrades to a warning instead of taking down the page.
+    Sports and Polymarket are API-only and refresh live on every call. The DK Predictions
+    futures track is read straight from the cache the monitor writes — the dashboard never
+    scrapes DraftKings itself (it can't, inside Streamlit on Windows); the "Update DK data"
+    button drives the monitor instead. Each track runs only when enabled, and a failure in
+    one degrades to a warning instead of taking down the page.
     """
     cards, n_matched, n_arbs, quota, warnings = [], 0, 0, None, []
-    steps = (len(sport_labels) + int(include_novelty) + int(include_poly)
-             + int(include_futures))
+    steps = len(sport_labels) + int(include_poly) + int(include_futures)
     progress = st.progress(0.0, text="Scanning markets...")
     done = 0
 
@@ -293,32 +336,6 @@ def scan(sport_labels, bankroll, include_novelty, include_poly, include_futures)
         quota = pr.quota_remaining or quota
         done += 1
         progress.progress(done / steps, text=f"Scanned {label}")
-
-    if include_novelty:
-        progress.progress(done / steps, text="Scanning novelty (DraftKings × Kalshi)...")
-        live = None
-        try:
-            nr = run_novelty_detection(bankroll=bankroll, headless=True)
-            live = [from_novelty(r) for r in nr.results]
-        except Exception:
-            live = None  # fall back to the cached last-good scan below
-        if live is not None:
-            cache.save_cards("novelty", live)
-            cards.extend(live)
-            n_matched += len(live)
-            n_arbs += sum(1 for c in live if c.is_arb)
-        else:
-            cached, ts = cache.load_cards("novelty")
-            if cached:
-                cards.extend(cached)
-                n_matched += len(cached)
-                n_arbs += sum(1 for c in cached if c.is_arb)
-                warnings.append(
-                    "Novelty live scan unavailable — showing the last successful scan "
-                    f"from {cache.humanize_age(ts)}.")
-            # nothing live and nothing cached -> contribute nothing, no banner
-        done += 1
-        progress.progress(done / steps)
 
     if include_poly:
         progress.progress(done / steps, text="Scanning Polymarket × Kalshi...")
@@ -346,38 +363,20 @@ def scan(sport_labels, bankroll, include_novelty, include_poly, include_futures)
         progress.progress(done / steps)
 
     if include_futures:
-        progress.progress(done / steps, text="Scanning DK Predictions futures × Kalshi (slow)...")
-        # Lighter than the full once-a-day monitor scan so an interactive refresh stays
-        # quicker and makes fewer requests (less likely to trip DK throttling).
-        live = None
-        try:
-            fr = run_dk_predictions_detection(headless=True, max_groups_per_cat=8)
-            if fr.n_dk > 0:
-                live = [from_futures(c) for c in fr.comparisons]
-        except Exception as e:
+        # Cache-only: the monitor (a separate process) does the scraping; here we just
+        # display its last scan. Use the "Update DK data" button to refresh it.
+        cached, ts = cache.load_cards("futures")
+        if cached:
+            cards.extend(cached)
+            n_matched += len(cached)
+            n_arbs += sum(1 for c in cached if c.is_arb)
             warnings.append(
-                "DK Predictions live scan failed (browser scrape) — usually a timeout or "
-                f"DraftKings throttling repeated scrapes. Detail: {type(e).__name__}: {e}")
-        if live is not None:
-            cache.save_cards("futures", live)            # remember this good scan
-            cards.extend(live)
-            n_matched += len(live)
-            n_arbs += sum(1 for c in live if c.is_arb)
+                f"DK Predictions futures × Kalshi: showing the scan from "
+                f"{cache.humanize_age(ts)}. Use “Update DK data” in the sidebar to refresh.")
         else:
-            # Live scrape failed or came back empty (DK throttling) — show the last good
-            # scan from disk instead of nothing, with a note on how old it is.
-            cached, ts = cache.load_cards("futures")
-            if cached:
-                cards.extend(cached)
-                n_matched += len(cached)
-                n_arbs += sum(1 for c in cached if c.is_arb)
-                warnings.append(
-                    "DK Predictions live scan unavailable (DraftKings throttling) — "
-                    f"showing the last successful scan from {cache.humanize_age(ts)}.")
-            else:
-                warnings.append(
-                    "DK Predictions returned no data and there is no cached scan yet — "
-                    "run scripts/monitor_futures.py once to populate it.")
+            warnings.append(
+                "DK Predictions futures × Kalshi: no scan cached yet — click “Update DK "
+                "data” in the sidebar (or run scripts/monitor_futures.py).")
         done += 1
         progress.progress(done / steps)
 
@@ -391,7 +390,7 @@ def main():
     st.set_page_config(page_title="Betting Market Arb Detector", layout="wide")
     st.markdown(CSS, unsafe_allow_html=True)
     st.title("🎯 Betting Market Arb Detector")
-    st.caption("Kalshi vs US sportsbooks, LLM-matched novelty & Polymarket, and "
+    st.caption("Kalshi vs US sportsbooks, LLM-matched Polymarket, and "
                "DK Predictions futures · cross-venue arbitrage · fees & vig included")
 
     try:
@@ -406,29 +405,56 @@ def main():
 
     st.sidebar.markdown("**Extra tracks** · slower, run on refresh")
     have_key = bool(Settings.ANTHROPIC_API_KEY)
-    include_novelty = st.sidebar.checkbox(
-        "Novelty (DraftKings × Kalshi)", value=False, disabled=not have_key)
     include_poly = st.sidebar.checkbox(
         "Polymarket × Kalshi", value=False, disabled=not have_key)
     if not have_key:
-        st.sidebar.caption("Set ANTHROPIC_API_KEY in .env to enable the LLM-matched tracks.")
+        st.sidebar.caption("Set ANTHROPIC_API_KEY in .env to enable the Polymarket track.")
     include_futures = st.sidebar.checkbox(
         "DK Predictions futures × Kalshi", value=False)
-    st.sidebar.caption("Futures is deterministic (no API key) but slow — it scrapes "
-                       "several DK Predictions boards.")
+    st.sidebar.caption("Futures is read from the last scan the monitor wrote. Use "
+                       "“Update DK data” below to refresh it.")
 
     refresh = st.sidebar.button("🔄 Refresh", type="primary", use_container_width=True)
-    st.sidebar.caption("Each sport = 1 Odds API request per refresh.")
+    st.sidebar.caption("Sports and Polymarket refresh live (1 Odds API request per sport).")
 
-    if not sport_labels and not (include_novelty or include_poly or include_futures):
+    # DK data updater. The dashboard can't scrape DraftKings itself (Playwright won't run
+    # inside Streamlit on Windows), so this drives the monitor in a separate process.
+    update_dk = force_dk = False
+    if include_futures:
+        st.sidebar.markdown("**DK data**")
+        force_dk = st.sidebar.checkbox("Force update (ignore cooldown)", value=False)
+        update_dk = st.sidebar.button("⟳ Update DK data (~2 min)", use_container_width=True)
+
+    if not sport_labels and not (include_poly or include_futures):
         st.info("Pick at least one sport or enable a track in the sidebar.")
         return
 
+    # "Update DK data" runs the scraper out-of-process, then rebuilds from the fresh cache.
+    # The cooldown stops repeated clicks from hammering DraftKings (force overrides it).
+    if update_dk:
+        _, dk_ts = cache.load_cards("futures")
+        on_cd, remaining = cache.cooldown_state(dk_ts, DK_COOLDOWN_SECS, force=force_dk)
+        if on_cd:
+            st.sidebar.warning(
+                f"DK data is {cache.humanize_age(dk_ts)} old. Next update in "
+                f"{_humanize_secs(remaining)}, or tick Force update.")
+        else:
+            with st.spinner("Running the DK scraper (~2 min). Runs in the background; "
+                            "no browser window will open."):
+                ok, msg = _run_monitor()
+            if ok:
+                st.sidebar.success(f"DK data updated ({msg}).")
+                st.session_state.scan = scan(sport_labels, bankroll,
+                                             include_poly, include_futures)
+                st.session_state.hide_notices = False
+            else:
+                st.sidebar.error(f"DK scraper failed: {msg}")
+
     # Fetch on first load or when Refresh pressed (avoids burning API quota and
-    # re-running the slow scrape tracks on every widget interaction).
+    # re-running the live tracks on every widget interaction).
     if refresh or "scan" not in st.session_state:
         st.session_state.scan = scan(sport_labels, bankroll,
-                                     include_novelty, include_poly, include_futures)
+                                     include_poly, include_futures)
         st.session_state.hide_notices = False  # new scan -> show its notices again
     data = st.session_state.scan
 
@@ -461,8 +487,8 @@ def main():
     st.markdown(f"<div class='arb-wrap'>{cards}</div>", unsafe_allow_html=True)
     st.caption(
         "Edge = 1 − (sum of effective costs incl. Kalshi fees + sportsbook vig). "
-        "Sports cards show the best line across major US books; NOVELTY and POLYMARKET "
-        "cards are matched by Claude (open the card to see the match confidence and why); "
+        "Sports cards show the best line across major US books; POLYMARKET cards are "
+        "matched by Claude (open the card to see the match confidence and why); "
         "DK × KALSHI futures cards compare every candidate on a board, with a Yes+No "
         "lock cost (under $1 = arb). ×N = buy N whole Kalshi contracts at the ¢ limit "
         "price; other legs show a $ stake. All legs are placed manually — no betting API."
