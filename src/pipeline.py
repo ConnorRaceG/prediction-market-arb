@@ -328,6 +328,10 @@ def run_dk_predictions_detection(
             # LLM step shows up in logs instead of silently matching nothing.
             print(f"[futures] LLM matching skipped: {e}")
 
+    # Drop matches that yielded no comparable candidates (e.g. a party board whose
+    # outcomes never aligned with the Kalshi candidate names). An empty comparison
+    # carries no information and would render as a junk -100% card with no rows.
+    comparisons = [c for c in comparisons if c.n_shared > 0]
     comparisons.sort(key=lambda c: c.best_lock if c.best_lock is not None else 9)
     unmatched = [m.event_name for m in dk_markets if m.market_id not in matched_ids]
 
