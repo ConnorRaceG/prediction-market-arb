@@ -44,19 +44,21 @@ UPDATE_BUDGET = 8
 
 def _run_monitor(budget: int = UPDATE_BUDGET):
     """Run the futures monitor in its own process (where Playwright works), wait for it
-    to write the cache, and return (ok, message). This is how the dashboard gets fresh
-    DK data without launching a browser inside Streamlit."""
+    to write the cache, and return (status, message) with status in {ok, busy, error}.
+    This is how the dashboard gets fresh DK data without launching a browser in Streamlit."""
     cmd = [sys.executable, MONITOR_SCRIPT, "--budget", str(budget)]
     try:
         r = subprocess.run(cmd, cwd=str(project_root), capture_output=True,
                            text=True, timeout=600)
     except subprocess.TimeoutExpired:
-        return False, "scraper timed out after 10 minutes"
+        return "error", "scraper timed out after 10 minutes"
+    if r.returncode == 2:                 # monitor's "another scan is already running"
+        return "busy", "another DK scan is already running"
     if r.returncode != 0:
-        return False, (r.stderr or r.stdout or "unknown error").strip()[-400:]
-    # Surface the scan's own summary line(s) on success.
+        return "error", (r.stderr or r.stdout or "unknown error").strip()[-400:]
+    # Surface the scan's own summary line on success.
     tail = [ln for ln in (r.stdout or "").splitlines() if "priced" in ln or "discovered" in ln]
-    return True, (tail[-1] if tail else "done")
+    return "ok", (tail[-1] if tail else "done")
 
 # Display label -> canonical sport key (same keys The Odds API uses)
 SPORTS = {
@@ -441,14 +443,16 @@ def main():
         else:
             with st.spinner("Running the DK scraper (~2 min). Runs in the background; "
                             "no browser window will open."):
-                ok, msg = _run_monitor()
+                status, msg = _run_monitor()
             _, new_ts = cache.load_cards("futures")
-            if ok and new_ts != dk_ts:
+            if status == "ok" and new_ts != dk_ts:
                 st.sidebar.success(f"DK data updated ({msg}).")
                 st.session_state.scan = scan(sport_labels, bankroll,
                                              include_poly, include_futures)
                 st.session_state.hide_notices = False
-            elif ok:
+            elif status == "busy":
+                st.sidebar.info("Another DK scan is already running — try again shortly.")
+            elif status == "ok":
                 # Ran cleanly but the cache didn't move = nothing got priced (throttled).
                 st.sidebar.warning("Scraper ran but priced no boards (likely DraftKings "
                                    "throttling). Showing the previous scan; try again later.")

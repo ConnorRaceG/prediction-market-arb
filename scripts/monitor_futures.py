@@ -37,6 +37,35 @@ DK_PROFILE = os.path.join(DATA_DIR, "dk_profile")
 # so it prices a bigger budget of the prioritized boards each run.
 PRICE_BUDGET = 18
 
+# A single-scan lock so the scheduled run and a dashboard-triggered run can't scrape
+# DraftKings (and write the cache) at the same time. A lock older than this is treated
+# as stale (a previous run crashed) and reclaimed; a real scan finishes well under it.
+LOCK = os.path.join(DATA_DIR, "monitor.lock")
+LOCK_STALE_SECS = 20 * 60
+
+
+def _acquire_lock() -> bool:
+    """Take the exclusive scan lock. False if another fresh scan already holds it."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    if os.path.exists(LOCK) and (time.time() - os.path.getmtime(LOCK)) < LOCK_STALE_SECS:
+        return False
+    try:
+        if os.path.exists(LOCK):
+            os.remove(LOCK)  # stale -> reclaim
+        fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except (FileExistsError, OSError):
+        return False  # lost the race to another scan
+    with os.fdopen(fd, "w") as f:
+        f.write(f"{os.getpid()} {datetime.now().isoformat(timespec='seconds')}")
+    return True
+
+
+def _release_lock() -> None:
+    try:
+        os.remove(LOCK)
+    except OSError:
+        pass
+
 
 def _record(ts: str, pr) -> dict:
     """One history row: counts + every matched board's best lock (for trend-watching)."""
@@ -76,8 +105,19 @@ def _windows_alert(title: str, message: str) -> None:
 
 
 def scan_once(budget: int = PRICE_BUDGET) -> int:
-    """Run one scan, log it, alert on any arb. Returns the number of boards with an arb."""
+    """Run one scan, log it, alert on any arb. Returns the number of boards with an arb,
+    or -1 if another scan is already running (this one skips to avoid a double-scrape)."""
     os.makedirs(DATA_DIR, exist_ok=True)
+    if not _acquire_lock():
+        print("another scan is already running; skipping this one.")
+        return -1
+    try:
+        return _scan_once_locked(budget)
+    finally:
+        _release_lock()
+
+
+def _scan_once_locked(budget: int) -> int:
     Settings.validate()
     ts = datetime.now().isoformat(timespec="seconds")
     print(f"[{ts}] scanning DK Predictions x Kalshi futures...")
@@ -134,7 +174,9 @@ def main():
                 print(f"scan failed: {e}")
             time.sleep(a.loop * 3600)
     else:
-        scan_once(a.budget)
+        # Exit 2 signals "skipped, another scan is running" so a caller (the dashboard)
+        # can tell that apart from a real failure.
+        sys.exit(2 if scan_once(a.budget) == -1 else 0)
 
 
 if __name__ == "__main__":

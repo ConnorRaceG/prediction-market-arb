@@ -34,10 +34,11 @@ Separate tracks. Same fee and sizing math, matched differently, and they only me
 |---|---|---|
 | Sports | Kalshi x ~10 US sportsbooks | per-sport team registry (exact, free) |
 | Futures | DraftKings Predictions x Kalshi | candidate-name overlap, plus Claude for binary/political boards |
-| Novelty | DraftKings sportsbook x Kalshi | Claude (semantic) |
 | Polymarket | Polymarket x Kalshi | Claude (semantic) |
 
 The sports path never loads the LLM or browser dependencies, those are imported lazily only when you turn on a track that needs them.
+
+The futures track doesn't scrape live from the dashboard. The monitor does the scraping and writes a local cache; the dashboard reads that cache so it loads instantly, with an "Update DK data" button that reruns the scraper on demand. The older DraftKings sportsbook novelty scraper is still in the repo but isn't wired into the dashboard.
 
 ```
 src/
