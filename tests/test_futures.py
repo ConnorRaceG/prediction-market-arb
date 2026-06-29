@@ -13,7 +13,8 @@ Run:  python -m tests.test_futures   (or: pytest tests/)
 
 from src.models import Market, Outcome
 from src.arb.fees import effective_cost
-from src.matching.futures_matcher import match_futures, normalize_name, FuturesMatch
+from src.matching.futures_matcher import (
+    match_futures, normalize_name, FuturesMatch, period_sig, period_conflict)
 from src.arb.futures_detector import compare_futures
 
 
@@ -67,6 +68,31 @@ def test_match_picks_correct_counterpart():
     assert matches[0].n_shared == 8 and matches[0].overlap == 1.0
     print(f"  match_correct: -> {matches[0].kalshi_market_id} "
           f"({matches[0].n_shared} shared, overlap {matches[0].overlap:.2f})")
+
+
+def test_period_sig_and_conflict():
+    assert period_sig("Fed decision in Jul 2026?") == ("2026", "jul")
+    assert period_sig("Time's Person of the Year for 2026") == ("2026", None)
+    assert period_sig("Recession this year?") == (None, None)
+    assert period_conflict("Fed decision in Jul 2026", "Fed decision in Sep 2026")
+    assert not period_conflict("Fed decision in Jul 2026", "Fed decision in Jul 2026")
+    # lenient: a missing year/month on either side is not a conflict
+    assert not period_conflict("US Recession in 2026?", "Recession this year?")
+    print("  period_sig/conflict: month+year parsed; lenient on missing parts")
+
+
+def test_match_rejects_other_month():
+    # A board that recurs monthly repeats the same candidate names. The DK July board must
+    # NOT match the Kalshi September one despite a perfect candidate overlap, and must take
+    # the July counterpart when both are present.
+    names = ["Alpha Co", "Bravo Co", "Charlie Co", "Delta Co"]
+    dk = _names_market("dk_predictions", "dkJUL", "Top mover in Jul 2026", names)
+    sep = _names_market("kalshi", "KXSEP", "Top mover in Sep 2026", names)
+    assert match_futures([dk], [sep]) == []                       # cross-month rejected
+    jul = _names_market("kalshi", "KXJUL", "Top mover in Jul 2026", names)
+    m = match_futures([dk], [sep, jul])
+    assert len(m) == 1 and m[0].kalshi_market_id == "KXJUL"       # right month picked
+    print("  period_match: cross-month rejected, same-month chosen")
 
 
 def test_overlap_gate_rejects_phantom():
@@ -192,6 +218,8 @@ def test_only_shared_candidates():
 if __name__ == "__main__":
     test_normalize_name()
     test_match_picks_correct_counterpart()
+    test_period_sig_and_conflict()
+    test_match_rejects_other_month()
     test_overlap_gate_rejects_phantom()
     test_overlap_gate_rejects_subset()
     test_candidate_arb_flagged()

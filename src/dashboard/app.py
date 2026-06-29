@@ -442,11 +442,16 @@ def main():
             with st.spinner("Running the DK scraper (~2 min). Runs in the background; "
                             "no browser window will open."):
                 ok, msg = _run_monitor()
-            if ok:
+            _, new_ts = cache.load_cards("futures")
+            if ok and new_ts != dk_ts:
                 st.sidebar.success(f"DK data updated ({msg}).")
                 st.session_state.scan = scan(sport_labels, bankroll,
                                              include_poly, include_futures)
                 st.session_state.hide_notices = False
+            elif ok:
+                # Ran cleanly but the cache didn't move = nothing got priced (throttled).
+                st.sidebar.warning("Scraper ran but priced no boards (likely DraftKings "
+                                   "throttling). Showing the previous scan; try again later.")
             else:
                 st.sidebar.error(f"DK scraper failed: {msg}")
 

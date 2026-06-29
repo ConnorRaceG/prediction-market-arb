@@ -38,13 +38,23 @@ def save_cards(track: str, cards: list) -> None:
 
 
 def load_cards(track: str):
-    """Return (cards, timestamp) from the last saved scan, or ([], None) if none."""
+    """Return (cards, timestamp) from the last saved scan, or ([], None) if none.
+
+    Tolerant of schema drift: a card whose stored shape no longer matches the current
+    CardView is skipped rather than crashing the dashboard (e.g. after a model change).
+    """
     try:
         with open(_path(track), encoding="utf-8") as f:
             payload = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return [], None
-    return [_from_dict(d) for d in payload.get("cards", [])], payload.get("ts")
+    cards = []
+    for d in payload.get("cards", []):
+        try:
+            cards.append(_from_dict(d))
+        except Exception:
+            continue
+    return cards, payload.get("ts")
 
 
 def _from_dict(d: dict) -> CardView:

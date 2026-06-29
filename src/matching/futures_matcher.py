@@ -8,10 +8,36 @@ share. This keeps the futures track deterministic and free; the LLM matcher stay
 available for the genuinely ambiguous novelty/Polymarket cases elsewhere.
 """
 
+import re
 import unicodedata
 from dataclasses import dataclass
 
 from src.models import Market
+
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july",
+           "august", "september", "october", "november", "december")
+_MONTH_RE = re.compile(r"\b(" + "|".join(_MONTHS + tuple(m[:3] for m in _MONTHS)) + r")\b")
+_YEAR_RE = re.compile(r"\b(20\d\d)\b")
+
+
+def period_sig(title: str) -> tuple[str | None, str | None]:
+    """(year, 3-letter month) named in a board title, e.g. 'Fed decision in Jul 2026?'
+    -> ('2026', 'jul'). Either part may be None when the title doesn't say."""
+    t = (title or "").lower()
+    y = _YEAR_RE.search(t)
+    m = _MONTH_RE.search(t)
+    return (y.group(1) if y else None, m.group(1)[:3] if m else None)
+
+
+def period_conflict(a_title: str, b_title: str) -> bool:
+    """True if two titles name a period that disagrees (different year or month).
+
+    Stops a board matching the SAME recurring board for a different period — the July
+    Fed decision vs the September one share identical candidate names and would otherwise
+    match and cross-price. Lenient on purpose: a missing year/month on either side is not
+    a conflict (e.g. 'Recession this year?' carries no year, so it can still match)."""
+    (ay, am), (by, bm) = period_sig(a_title), period_sig(b_title)
+    return bool((ay and by and ay != by) or (am and bm and am != bm))
 
 
 @dataclass
@@ -59,6 +85,10 @@ def match_futures(dk_markets: list[Market], kalshi_markets: list[Market],
             continue
         best = None  # (kalshi_market, shared_set, overlap, jaccard)
         for km, kn in kalshi_named:
+            # Recurring boards (e.g. the Fed decision each month) repeat the same candidate
+            # names; a different-period Kalshi board must not be matched on that overlap.
+            if period_conflict(dk.event_name, km.event_name):
+                continue
             shared = dk_names & kn
             if len(shared) < 2:
                 continue

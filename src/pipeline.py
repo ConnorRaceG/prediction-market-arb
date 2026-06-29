@@ -236,7 +236,7 @@ def run_dk_predictions_detection(
     absent or use_llm is False).
     """
     from src.adapters.dk_predictions import DKPredictionsAdapter
-    from src.matching.futures_matcher import match_futures, FuturesMatch
+    from src.matching.futures_matcher import match_futures, FuturesMatch, period_conflict
     from src.arb.futures_detector import compare_futures
     from src import dk_state
 
@@ -313,6 +313,10 @@ def run_dk_predictions_detection(
                         or km is None):
                     continue
                 dkm = dk_by[lm.dk_market_id]
+                # Backstop the LLM: never accept a match across different periods even at
+                # high confidence (the July vs September Fed boards look near-identical).
+                if period_conflict(dkm.event_name, km.event_name):
+                    continue
                 fm = FuturesMatch(dkm.market_id, km.market_id, dkm.event_name,
                                   km.event_name, [], 0, 1.0, 1.0)
                 comparisons.append(compare_futures(
