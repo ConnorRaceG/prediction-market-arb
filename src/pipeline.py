@@ -202,13 +202,13 @@ class DKPredictionsPipelineResult:
 
 
 def run_dk_predictions_detection(
-    categories=("culture", "politics", "economics", "business"),
+    categories=("culture", "politics", "economics", "business", "crypto", "f1"),
     price_budget: int = 12,
     max_per_cat: int = 40,
     headless: bool = False,
     profile_dir: str | None = None,
     kalshi_categories=("Entertainment", "Politics", "Economics", "Financials",
-                       "Elections", "Companies"),
+                       "Elections", "Companies", "Crypto", "Sports"),
     max_kalshi_fetch: int = 40,
     use_llm: bool = True,
     verbose: bool = False,
@@ -334,8 +334,10 @@ def run_dk_predictions_detection(
                     pool_markets.append(km)
             for lm in match_futures_llm(leftover, pool_markets):
                 km = k_by.get(lm.kalshi_market_id)
+                # The LLM occasionally echoes a slightly-wrong board id; .get-guard both
+                # sides so one bad id skips that match instead of aborting the whole step.
                 if (lm.confidence < MIN_FUTURES_LLM_CONF or lm.dk_market_id in matched_ids
-                        or km is None):
+                        or km is None or lm.dk_market_id not in dk_by):
                     continue
                 dkm = dk_by[lm.dk_market_id]
                 # Backstop the LLM: never accept a match across different periods even at

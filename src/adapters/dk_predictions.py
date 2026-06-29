@@ -33,8 +33,10 @@ ORIGIN = "https://predictions.draftkings.com"
 BASE = ORIGIN + "/en"
 POLL_MARKER = "predict/v1/polling"  # the DK Predictions price-polling endpoint
 
-# The four most interesting (loosely-priced) categories per the user.
-DEFAULT_CATEGORIES = ("culture", "politics", "economics", "business")
+# The loosely-priced futures categories worth scanning. Sports leagues (MLB/NBA/...) are
+# covered game-by-game by the sports track; crypto and F1 are season/price futures whose
+# Kalshi counterparts line up (Bitcoin price boards, F1 champion boards).
+DEFAULT_CATEGORIES = ("culture", "politics", "economics", "business", "crypto", "f1")
 
 # Human-like pause (seconds) between page loads. Back-to-back loads are the single
 # most bot-looking thing we can do, and the thing that trips DraftKings' (Akamai) bot
