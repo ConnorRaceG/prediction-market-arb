@@ -247,12 +247,14 @@ def render_futures_card(view):
         subtitle += (f"<div class='sub'>🤖 matched by Claude · "
                      f"{view.confidence:.0%}{why}</div>")
     flag = "<div><span class='intel'>detection only</span></div>" if view.detection_only else ""
+    when = (f"<div class='when'>🕒 prices queried {_fmt_time(view.queried_at)} · "
+            f"{cache.humanize_age(view.queried_at)}</div>" if view.queried_at else "")
     return (
         f"<div class='arb-card {status}'>"
         f"<div class='card-head'><span class='matchup'>{view.title}"
         f"<span class='sport-tag'>{view.tag}</span></span>"
         f"<span class='edge-pill {status}'>{view.edge:+.2%}</span></div>"
-        f"{subtitle}{flag}"
+        f"{subtitle}{flag}{when}"
         f"<div class='meter'><div class='meter-zero'></div>"
         f"<div class='meter-fill {status}' style='left:{left:.1f}%; width:{width:.1f}%'></div></div>"
         f"{ribbon}{_comp_table(lead)}{more}</div>"

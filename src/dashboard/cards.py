@@ -97,6 +97,7 @@ class CardView:
     note: str | None = None           # novelty/poly: LLM match rationale
     confidence: float | None = None   # novelty/poly: LLM match confidence (0-1)
     detection_only: bool = False      # poly: flagged not tradeable from MA
+    queried_at: float | None = None   # when these prices were scraped (futures = cache ts)
 
 
 def _outcome_legs(result) -> list[CardLeg]:

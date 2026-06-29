@@ -48,13 +48,16 @@ def load_cards(track: str):
             payload = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return [], None
+    ts = payload.get("ts")
     cards = []
     for d in payload.get("cards", []):
         try:
-            cards.append(_from_dict(d))
+            card = _from_dict(d)
+            card.queried_at = ts   # stamp every card with this scan's time
+            cards.append(card)
         except Exception:
             continue
-    return cards, payload.get("ts")
+    return cards, ts
 
 
 def _from_dict(d: dict) -> CardView:
