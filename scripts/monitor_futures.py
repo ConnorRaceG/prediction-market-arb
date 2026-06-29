@@ -33,9 +33,11 @@ ALERTS = os.path.join(DATA_DIR, "arbs_found.log")
 # (whichever runs while the other holds it falls back to an ephemeral context).
 DK_PROFILE = os.path.join(DATA_DIR, "dk_profile")
 
-# The scheduled monitor can afford a deeper sweep than an interactive dashboard pull,
-# so it prices a bigger budget of the prioritized boards each run.
-PRICE_BUDGET = 18
+# Cover the whole catalog (currently ~23 boards). Matching quality depends on coverage:
+# pricing only a few boards starves the Kalshi candidate pool and the LLM ends up matching
+# a board to the wrong Kalshi variant. The dashboard no longer scrapes on its own, so this
+# infrequent, jittered, warm-profile run can afford full coverage without tripping throttling.
+PRICE_BUDGET = 30
 
 # A single-scan lock so the scheduled run and a dashboard-triggered run can't scrape
 # DraftKings (and write the cache) at the same time. A lock older than this is treated

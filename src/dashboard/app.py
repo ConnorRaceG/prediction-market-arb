@@ -36,10 +36,11 @@ from config.settings import Settings, project_root
 # the shared "last DK pull" clock, so a recent scheduled monitor run counts too.
 DK_COOLDOWN_SECS = 2.5 * 3600
 
-# The scraper the "Update DK data" button runs (out-of-process). Lighter budget than the
-# scheduled monitor so an interactive update finishes in ~2 minutes.
+# The scraper the "Update DK data" button runs (out-of-process). Covers the full catalog
+# so matches line up correctly (a thin scan starves the Kalshi pool and mis-matches boards);
+# that makes it a ~5-minute run, which is fine for an occasional, cooldown-gated button.
 MONITOR_SCRIPT = os.path.join(project_root, "scripts", "monitor_futures.py")
-UPDATE_BUDGET = 8
+UPDATE_BUDGET = 30
 
 
 def _run_monitor(budget: int = UPDATE_BUDGET):
@@ -49,9 +50,9 @@ def _run_monitor(budget: int = UPDATE_BUDGET):
     cmd = [sys.executable, MONITOR_SCRIPT, "--budget", str(budget)]
     try:
         r = subprocess.run(cmd, cwd=str(project_root), capture_output=True,
-                           text=True, timeout=600)
+                           text=True, timeout=900)
     except subprocess.TimeoutExpired:
-        return "error", "scraper timed out after 10 minutes"
+        return "error", "scraper timed out after 15 minutes"
     if r.returncode == 2:                 # monitor's "another scan is already running"
         return "busy", "another DK scan is already running"
     if r.returncode != 0:
@@ -425,7 +426,7 @@ def main():
     if include_futures:
         st.sidebar.markdown("**DK data**")
         force_dk = st.sidebar.checkbox("Force update (ignore cooldown)", value=False)
-        update_dk = st.sidebar.button("⟳ Update DK data (~2 min)", use_container_width=True)
+        update_dk = st.sidebar.button("⟳ Update DK data (~5 min)", use_container_width=True)
 
     if not sport_labels and not (include_poly or include_futures):
         st.info("Pick at least one sport or enable a track in the sidebar.")
@@ -441,8 +442,8 @@ def main():
                 f"DK data is {cache.humanize_age(dk_ts)} old. Next update in "
                 f"{_humanize_secs(remaining)}, or tick Force update.")
         else:
-            with st.spinner("Running the DK scraper (~2 min). Runs in the background; "
-                            "no browser window will open."):
+            with st.spinner("Running the DK scraper (~5 min, full board coverage). Runs in "
+                            "the background; no browser window will open."):
                 status, msg = _run_monitor()
             _, new_ts = cache.load_cards("futures")
             if status == "ok" and new_ts != dk_ts:
