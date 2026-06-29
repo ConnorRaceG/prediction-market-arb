@@ -238,7 +238,7 @@ def run_dk_predictions_detection(
     from src.adapters.dk_predictions import DKPredictionsAdapter
     from src.matching.futures_matcher import match_futures, FuturesMatch, period_conflict
     from src.arb.futures_detector import compare_futures
-    from src import dk_state
+    from src import dk_state, dk_mappings
 
     adapter = DKPredictionsAdapter(headless=headless, profile_dir=profile_dir,
                                    verbose=verbose)
@@ -294,10 +294,35 @@ def run_dk_predictions_detection(
                    for mt in det_matches]
     matched_ids = {mt.dk_market_id for mt in det_matches}
 
-    # 2) LLM semantic match for the leftover boards (binary / political / economic).
+    # 2) Reuse pinned LLM mappings for boards we've matched before, so the LLM only runs
+    # on genuinely new/unmatched boards. Prices are still fetched live; only the
+    # (which Kalshi event, how outcomes align) decision is reused. A pin re-confirms after
+    # a week, and one that no longer aligns (0 shared) self-heals by falling through.
+    leftover = [m for m in dk_markets if m.market_id not in matched_ids]
+    mappings = dk_mappings.load()
+    pending = []
+    for dkm in leftover:
+        pin = mappings.get(dkm.market_id)
+        if dk_mappings.fresh(pin):
+            km = (k_by.get(pin["kalshi"])
+                  or kalshi.fetch_event_market(pin["kalshi"], pin.get("kalshi_title", "")))
+            if km is not None and not period_conflict(dkm.event_name, km.event_name):
+                fm = FuturesMatch(dkm.market_id, km.market_id, dkm.event_name,
+                                  km.event_name, [], 0, 1.0, 1.0)
+                comp = compare_futures(fm, dkm, km, confidence=pin.get("confidence"),
+                                       note=pin.get("note") or "",
+                                       outcome_map=pin.get("outcome_map"))
+                if comp.n_shared > 0:        # pin still aligns -> reuse, skip the LLM
+                    k_by[km.market_id] = km
+                    comparisons.append(comp)
+                    matched_ids.add(dkm.market_id)
+                    continue
+        pending.append(dkm)                  # no usable pin -> let the LLM try
+    leftover = pending
+
+    # 3) LLM semantic match for the remaining boards (binary / political / economic).
     # Fetch the candidate pool in full (the LLM needs both venues' outcomes to align
     # sides), then match + outcome-align in one call, and compare with that mapping.
-    leftover = [m for m in dk_markets if m.market_id not in matched_ids]
     if use_llm and leftover and Settings.ANTHROPIC_API_KEY:
         try:
             from src.matching.llm_matcher import match_futures_llm
@@ -323,10 +348,14 @@ def run_dk_predictions_detection(
                     fm, dkm, km, confidence=lm.confidence, note=lm.note,
                     outcome_map=lm.outcome_map))
                 matched_ids.add(lm.dk_market_id)
+                # Pin it so later scans reuse this mapping instead of re-calling the LLM.
+                dk_mappings.put(mappings, dkm.market_id, km.market_id, km.event_name,
+                                lm.outcome_map, lm.confidence, lm.note)
         except Exception as e:
             # Fail soft (keep the deterministic results) but surface WHY, so a broken
             # LLM step shows up in logs instead of silently matching nothing.
             print(f"[futures] LLM matching skipped: {e}")
+    dk_mappings.save(mappings)
 
     # Drop matches that yielded no comparable candidates (e.g. a party board whose
     # outcomes never aligned with the Kalshi candidate names). An empty comparison
